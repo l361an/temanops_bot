@@ -1,4 +1,4 @@
-// worker.js
+// workers.js
 
 // ================== CONFIG ==================
 const GROUP_ID = -1001901372111;
@@ -82,7 +82,67 @@ export default {
           }
         }
         return new Response("OK");
-      }      
+      }
+
+      // ===== GROUP COMMAND: AKTIF / NONAKTIF TEMANOPS =====
+      if (
+        msg.chat?.type &&
+        ["group", "supergroup"].includes(msg.chat.type) &&
+        typeof msg.text === "string" &&
+        msg.text.startsWith("/")
+      ) {
+        const cmd = msg.text.trim().split(/\s+/)[0].split("@")[0].toLowerCase();
+
+        if (cmd === "/aktifkantemanops") {
+          const allowed = await canManageTemanOps(API, msg);
+          if (!allowed) {
+            await send(
+              API,
+              msg.chat.id,
+              "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
+            );
+            return new Response("OK");
+          }
+
+          await setTemanOpsEnabled(KV, msg.chat.id, true);
+          await safeKVPut(KV, `temanops_title:${msg.chat.id}`, String(msg.chat.title || msg.chat.id));
+
+          await send(API, msg.chat.id, "✅ *TeManOps aktif* di group ini");
+          return new Response("OK");
+        }
+
+        if (cmd === "/nonaktifkantemanops") {
+          const allowed = await canManageTemanOps(API, msg);
+          if (!allowed) {
+            await send(
+              API,
+              msg.chat.id,
+              "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
+            );
+            return new Response("OK");
+          }
+
+          await setTemanOpsEnabled(KV, msg.chat.id, false);
+          await safeKVPut(KV, `temanops_title:${msg.chat.id}`, String(msg.chat.title || msg.chat.id));
+
+          await send(API, msg.chat.id, "⛔ *TeManOps nonaktif* di group ini");
+          return new Response("OK");
+        }
+
+        if (cmd === "/statustemanops") {
+          const enabled = await isTemanOpsEnabled(KV, msg.chat.id);
+          const title = await safeKVGet(KV, `temanops_title:${msg.chat.id}`);
+
+          await send(
+            API,
+            msg.chat.id,
+            enabled
+              ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title || msg.chat.title || String(msg.chat.id))}`
+              : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title || msg.chat.title || String(msg.chat.id))}`
+          );
+          return new Response("OK");
+        }
+      }
 
       // ===== PRIVATE COMMAND =====
       if (msg.chat.type === "private" && msg.text?.startsWith("/")) {
@@ -297,7 +357,6 @@ async function handleModeration(API, msg, KV) {
     const admin = await isAdmin(API, msg.chat.id, msg.from.id);
     if (admin) return;
 
-    // Anti flood untuk hampir semua pesan user
     if (await isFlood(API, msg, KV)) return;
 
     const content = getMessageContent(msg);
@@ -305,7 +364,6 @@ async function handleModeration(API, msg, KV) {
 
     const text = content.toLowerCase();
 
-    // Link moderation
     if (LINK_REGEX.test(text)) {
       LINK_REGEX.lastIndex = 0;
       const allowed = await linkAllowed(text, KV);
@@ -318,7 +376,6 @@ async function handleModeration(API, msg, KV) {
     }
     LINK_REGEX.lastIndex = 0;
 
-    // Banword moderation
     const banned = String(await getKV(KV, "banned_words"))
       .split(",")
       .map(x => x.trim().toLowerCase())
@@ -908,6 +965,47 @@ async function isAdmin(API, chatId, userId) {
   });
 
   return !!(data?.result && ["administrator", "creator"].includes(data.result.status));
+}
+
+async function isCreator(API, chatId, userId) {
+  if (!userId) return false;
+
+  const data = await tg(API, "getChatMember", {
+    chat_id: chatId,
+    user_id: userId
+  });
+
+  return data?.result?.status === "creator";
+}
+
+function isAnonymousGroupAdminMessage(msg) {
+  return !!(
+    msg?.chat?.id &&
+    msg?.sender_chat?.id &&
+    String(msg.sender_chat.id) === String(msg.chat.id)
+  );
+}
+
+async function canManageTemanOps(API, msg) {
+  if (await isCreator(API, msg.chat.id, msg.from?.id)) {
+    return true;
+  }
+
+  if (isAnonymousGroupAdminMessage(msg)) {
+    return true;
+  }
+
+  return false;
+}
+
+async function setTemanOpsEnabled(KV, chatId, enabled) {
+  await safeKVPut(KV, `temanops_enabled:${chatId}`, enabled ? "1" : "0");
+  return true;
+}
+
+async function isTemanOpsEnabled(KV, chatId) {
+  const val = await safeKVGet(KV, `temanops_enabled:${chatId}`);
+  return val === "1";
 }
 
 function safeJSON(raw, def) {
