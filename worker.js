@@ -1,4 +1,4 @@
-// workers.js
+// worker.js
 
 // ================== CONFIG ==================
 const GROUP_ID = -1001901372111;
