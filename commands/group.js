@@ -42,6 +42,7 @@ export async function handleGroupCommand(API, msg, KV) {
     "/nonaktifkantemanops",
     "/statustemanops",
     "/aktifkanlogtemanops",
+    "/nonaktifkanlogtemanops",
     "/banword",
     "/linkwhitelist",
     "/linkblacklist",
@@ -148,6 +149,16 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
+  if (cmd === "/nonaktifkanlogtemanops") {
+    await setGroupLogTarget(KV, chatId, chatId, null);
+    await send(
+      API,
+      msg.chat.id,
+      "✅ Log TeManOps untuk group ini dikembalikan ke General."
+    );
+    return true;
+  }
+
   if (cmd === "/listcmdgroup") {
     await send(
       API,
@@ -159,6 +170,7 @@ export async function handleGroupCommand(API, msg, KV) {
 • /nonaktifkantemanops
 • /statustemanops
 • /aktifkanlogtemanops
+• /nonaktifkanlogtemanops
 
 *Moderation*
 • /banword add [kata]
@@ -182,7 +194,7 @@ export async function handleGroupCommand(API, msg, KV) {
 • reply pesan user lalu /unmute
 
 ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
-ℹ️ Kalau belum pernah diaktifkan, log tetap ke General.
+ℹ️ /nonaktifkanlogtemanops mengembalikan log ke General.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
     return true;
