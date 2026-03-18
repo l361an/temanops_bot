@@ -60,3 +60,20 @@ export async function clearWelcomeStep(KV, userId) {
   if (!userId) return false;
   return safeKVDelete(KV, `welcome_setup:${userId}`);
 }
+
+export async function setSelectedGroup(KV, userId, chatId) {
+  if (!userId || !chatId) return false;
+  return safeKVPut(KV, `admin_target_group:${userId}`, String(Number(chatId)));
+}
+
+export async function getSelectedGroup(KV, userId) {
+  if (!userId) return null;
+  const raw = await safeKVGet(KV, `admin_target_group:${userId}`);
+  if (raw && /^-?\d+$/.test(raw)) return Number(raw);
+  return null;
+}
+
+export async function clearSelectedGroup(KV, userId) {
+  if (!userId) return false;
+  return safeKVDelete(KV, `admin_target_group:${userId}`);
+}
