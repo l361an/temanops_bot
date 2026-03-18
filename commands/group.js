@@ -1,18 +1,7 @@
 // commands/group.js
 
 import { GROUP_ID } from "../config.js";
-import {
-  send,
-  safeKVPut,
-  safeJSON,
-  gkey,
-  getGroupKV
-} from "../kv.js";
-import {
-  renderAdminList,
-  normalizeDomainInput,
-  escapeBasicMarkdown
-} from "../utils.js";
+import { send, safeKVPut } from "../kv.js";
 import {
   canManageTemanOps,
   canUseGroupAdminCommands
@@ -20,44 +9,57 @@ import {
 import {
   setTemanOpsEnabled,
   isTemanOpsEnabled,
-  getTemanOpsTitle
-} from "../status.js";
-import {
+  getTemanOpsTitle,
   setGroupLogTarget,
   getGroupLogTarget
 } from "../status.js";
-import { getCachedUserIdByUsername } from "../userCache.js";
 import { unmute } from "../moderation.js";
+import { getCachedUserIdByUsername } from "../userCache.js";
+import { escapeBasicMarkdown } from "../utils.js";
 
 export async function handleGroupCommand(API, msg, KV) {
   const parts = String(msg.text || "").trim().split(/\s+/);
   const raw = parts[0] || "";
   const a = parts[1];
-  const b = parts[2];
   const cmd = raw.split("@")[0].toLowerCase();
   const chatId = Number(msg.chat.id);
 
-  const groupOnlyCommands = new Set([
+  const groupCommands = new Set([
     "/aktifkantemanops",
     "/nonaktifkantemanops",
     "/statustemanops",
     "/aktifkanlogtemanops",
     "/nonaktifkanlogtemanops",
-    "/banword",
-    "/linkwhitelist",
-    "/linkblacklist",
-    "/antiflood",
-    "/setmutetime",
     "/unmute",
     "/listcmdgroup"
   ]);
 
-  if (!groupOnlyCommands.has(cmd)) return false;
+  const movedToPrivateCommands = new Set([
+    "/banword",
+    "/linkwhitelist",
+    "/linkblacklist",
+    "/antiflood",
+    "/setmutetime"
+  ]);
 
   if (!["group", "supergroup"].includes(msg.chat.type)) {
-    await send(API, msg.chat.id, "❌ Command ini hanya di group");
+    if (groupCommands.has(cmd) || movedToPrivateCommands.has(cmd)) {
+      await send(API, msg.chat.id, "❌ Command ini hanya di group");
+      return true;
+    }
+    return false;
+  }
+
+  if (movedToPrivateCommands.has(cmd)) {
+    await send(
+      API,
+      msg.chat.id,
+      "ℹ️ Command config ini sekarang dijalankan via private bot.\nGunakan /listcmd di private, lalu pilih group target dengan /listgroup dan /setgroup."
+    );
     return true;
   }
+
+  if (!groupCommands.has(cmd)) return false;
 
   if (cmd === "/aktifkantemanops") {
     const allowed = await canManageTemanOps(API, msg);
@@ -90,7 +92,11 @@ export async function handleGroupCommand(API, msg, KV) {
     }
 
     if (chatId === Number(GROUP_ID)) {
-      await send(API, msg.chat.id, "⚠️ Group legacy utama tidak bisa dinonaktifkan pada tahap ini");
+      await send(
+        API,
+        msg.chat.id,
+        "⚠️ Group legacy utama tidak bisa dinonaktifkan pada tahap ini"
+      );
       return true;
     }
 
@@ -115,8 +121,8 @@ export async function handleGroupCommand(API, msg, KV) {
       API,
       msg.chat.id,
       enabled
-        ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
-        : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
+        ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
+        : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
     );
     return true;
   }
@@ -172,211 +178,27 @@ export async function handleGroupCommand(API, msg, KV) {
 • /aktifkanlogtemanops
 • /nonaktifkanlogtemanops
 
-*Moderation*
-• /banword add [kata]
-• /banword del [kata]
-• /banword list
-
-• /linkwhitelist add [domain]
-• /linkwhitelist del [domain]
-• /linkwhitelist list
-
-• /linkblacklist add [domain]
-• /linkblacklist del [domain]
-• /linkblacklist list
-
-*Anti Spam*
-• /antiflood [limit] [detik]
-• /setmutetime [menit]
-
 *User Control*
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 
+*Config Commands*
+Jalankan via private bot:
+• /listgroup
+• /setgroup [group_id]
+• /groupaktif
+• /cleargroup
+• /banword add|del|list
+• /linkwhitelist add|del|list
+• /linkblacklist add|del|list
+• /antiflood [limit] [detik]
+• /setmutetime [menit]
+
+ℹ️ Untuk config moderation, jalankan di private bot agar tidak terlihat member.
 ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
 ℹ️ /nonaktifkanlogtemanops mengembalikan log ke General.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
-    return true;
-  }
-
-  if (cmd === "/banword") {
-    if (!a) {
-      await send(
-        API,
-        msg.chat.id,
-        "❌ Format:\n/banword add <kata>\n/banword del <kata>\n/banword list"
-      );
-      return true;
-    }
-
-    let list = String(await getGroupKV(KV, chatId, "banned_words"))
-      .split(",")
-      .map(x => x.trim().toLowerCase())
-      .filter(Boolean);
-
-    if (a === "list") {
-      if (list.length === 0) {
-        await send(API, msg.chat.id, "📭 Banword masih kosong");
-        return true;
-      }
-
-      await send(
-        API,
-        msg.chat.id,
-        `🚫 *Daftar Banword*\n\n${list.map((w, i) => `${i + 1}. ${escapeBasicMarkdown(w)}`).join("\n")}`
-      );
-      return true;
-    }
-
-    if (!b) {
-      await send(
-        API,
-        msg.chat.id,
-        "❌ Format:\n/banword add <kata>\n/banword del <kata>"
-      );
-      return true;
-    }
-
-    const action = a.toLowerCase();
-    const word = b.toLowerCase();
-
-    if (action === "add") {
-      if (list.includes(word)) {
-        await send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* sudah ada`);
-        return true;
-      }
-      list.push(word);
-      await safeKVPut(KV, gkey(chatId, "banned_words"), list.join(","));
-      await send(API, msg.chat.id, `✅ Kata *${escapeBasicMarkdown(word)}* ditambahkan`);
-      return true;
-    }
-
-    if (action === "del") {
-      if (!list.includes(word)) {
-        await send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* tidak ditemukan`);
-        return true;
-      }
-      list = list.filter(w => w !== word);
-      await safeKVPut(KV, gkey(chatId, "banned_words"), list.join(","));
-      await send(API, msg.chat.id, `🗑️ Kata *${escapeBasicMarkdown(word)}* dihapus`);
-      return true;
-    }
-
-    await send(API, msg.chat.id, "❌ Gunakan add / del / list");
-    return true;
-  }
-
-  if (cmd === "/linkwhitelist") {
-    if (!["add", "del", "list"].includes(a)) {
-      await send(API, msg.chat.id, "❌ /linkwhitelist add|del|list [domain]");
-      return true;
-    }
-
-    let list = safeJSON(await getGroupKV(KV, chatId, "link_whitelist"), []);
-
-    if (a === "list") {
-      await send(API, msg.chat.id, renderAdminList("✅ Link Whitelist", list));
-      return true;
-    }
-
-    if (!b) {
-      await send(API, msg.chat.id, "❌ Domain kosong");
-      return true;
-    }
-
-    const domain = normalizeDomainInput(b);
-
-    if (a === "add") {
-      if (list.includes(domain)) {
-        await send(API, msg.chat.id, "⚠️ Domain sudah ada");
-        return true;
-      }
-      list.push(domain);
-    }
-
-    if (a === "del") {
-      const before = list.length;
-      list = list.filter(d => d !== domain);
-
-      if (list.length === before) {
-        await send(API, msg.chat.id, "⚠️ Domain tidak ditemukan");
-        return true;
-      }
-    }
-
-    await safeKVPut(KV, gkey(chatId, "link_whitelist"), JSON.stringify(list));
-    await send(API, msg.chat.id, `✅ Whitelist diupdate:\n${escapeBasicMarkdown(domain)}`);
-    return true;
-  }
-
-  if (cmd === "/linkblacklist") {
-    if (!["add", "del", "list"].includes(a)) {
-      await send(API, msg.chat.id, "❌ /linkblacklist add|del|list [domain]");
-      return true;
-    }
-
-    let list = safeJSON(await getGroupKV(KV, chatId, "link_blacklist"), []);
-
-    if (a === "list") {
-      await send(API, msg.chat.id, renderAdminList("⛔ Link Blacklist", list));
-      return true;
-    }
-
-    if (!b) {
-      await send(API, msg.chat.id, "❌ Domain kosong");
-      return true;
-    }
-
-    const domain = normalizeDomainInput(b);
-
-    if (a === "add") {
-      if (list.includes(domain)) {
-        await send(API, msg.chat.id, "⚠️ Domain sudah ada");
-        return true;
-      }
-      list.push(domain);
-    }
-
-    if (a === "del") {
-      const before = list.length;
-      list = list.filter(d => d !== domain);
-
-      if (list.length === before) {
-        await send(API, msg.chat.id, "⚠️ Domain tidak ditemukan");
-        return true;
-      }
-    }
-
-    await safeKVPut(KV, gkey(chatId, "link_blacklist"), JSON.stringify(list));
-    await send(API, msg.chat.id, `⛔ Blacklist diupdate:\n${escapeBasicMarkdown(domain)}`);
-    return true;
-  }
-
-  if (cmd === "/antiflood") {
-    const limit = Number(a);
-    const win = Number(b);
-
-    if (!limit || !win || limit <= 0 || win <= 0) {
-      await send(API, msg.chat.id, "❌ Format: /antiflood <limit> <detik>");
-      return true;
-    }
-
-    await safeKVPut(KV, gkey(chatId, "flood_limit"), String(limit));
-    await safeKVPut(KV, gkey(chatId, "flood_window"), String(win));
-    await send(API, msg.chat.id, `✅ Anti flood diset: ${limit} pesan / ${win} detik`);
-    return true;
-  }
-
-  if (cmd === "/setmutetime") {
-    const n = Number(a);
-    if (!n || n <= 0) {
-      await send(API, msg.chat.id, "❌ Angka invalid");
-      return true;
-    }
-
-    await safeKVPut(KV, gkey(chatId, "mute_minutes"), String(n));
-    await send(API, msg.chat.id, `⏱️ Mute diset ${n} menit`);
     return true;
   }
 
