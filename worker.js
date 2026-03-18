@@ -257,6 +257,7 @@ async function handleGroupCommand(API, msg, KV) {
     "/aktifkantemanops",
     "/nonaktifkantemanops",
     "/statustemanops",
+    "/aktifkanlogtemanops",
     "/banword",
     "/linkwhitelist",
     "/linkblacklist",
@@ -286,6 +287,8 @@ async function handleGroupCommand(API, msg, KV) {
 
     await setTemanOpsEnabled(KV, chatId, true);
     await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
+
+    // Default log ke General saat pertama diaktifkan
     await setGroupLogTarget(KV, chatId, chatId, null);
 
     await send(API, msg.chat.id, "✅ *TeManOps aktif* di group ini");
@@ -318,13 +321,19 @@ async function handleGroupCommand(API, msg, KV) {
   if (cmd === "/statustemanops") {
     const enabled = await isTemanOpsEnabled(KV, chatId);
     const title = await getTemanOpsTitle(KV, chatId);
+    const logTarget = await getGroupLogTarget(KV, chatId);
+
+    let logInfo = "General";
+    if (logTarget?.thread_id) {
+      logInfo = `Topic ID ${logTarget.thread_id}`;
+    }
 
     await send(
       API,
       msg.chat.id,
       enabled
-        ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}`
-        : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}`
+        ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
+        : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
     );
     return true;
   }
@@ -332,6 +341,28 @@ async function handleGroupCommand(API, msg, KV) {
   const adminAllowed = await canUseGroupAdminCommands(API, msg, KV);
   if (!adminAllowed.ok) {
     await send(API, msg.chat.id, adminAllowed.message);
+    return true;
+  }
+
+  if (cmd === "/aktifkanlogtemanops") {
+    const threadId = msg.message_thread_id ? Number(msg.message_thread_id) : null;
+
+    await setGroupLogTarget(KV, chatId, chatId, threadId);
+
+    if (threadId) {
+      await send(
+        API,
+        msg.chat.id,
+        "✅ Log TeManOps untuk group ini sekarang diarahkan ke topic ini.",
+        threadId
+      );
+    } else {
+      await send(
+        API,
+        msg.chat.id,
+        "✅ Log TeManOps untuk group ini sekarang diarahkan ke General."
+      );
+    }
     return true;
   }
 
@@ -345,6 +376,7 @@ async function handleGroupCommand(API, msg, KV) {
 • /aktifkantemanops
 • /nonaktifkantemanops
 • /statustemanops
+• /aktifkanlogtemanops
 
 *Moderation*
 • /banword add [kata]
@@ -367,6 +399,8 @@ async function handleGroupCommand(API, msg, KV) {
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 
+ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
+ℹ️ Kalau belum pernah diaktifkan, log tetap ke General.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
     return true;
@@ -653,6 +687,7 @@ Jalankan langsung di group target:
 • /aktifkantemanops
 • /nonaktifkantemanops
 • /statustemanops
+• /aktifkanlogtemanops
 • /banword add|del|list
 • /linkwhitelist add|del|list
 • /linkblacklist add|del|list
@@ -671,6 +706,8 @@ Jalankan langsung di group target:
 • /listwelcomelink
 
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group target.
+ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
+ℹ️ Kalau belum pernah diaktifkan, log tetap ke General.
 ℹ️ Untuk sekarang, setting moderation dilakukan langsung dari group.
 ℹ️ Welcome masih mode legacy.`
     );
@@ -1079,13 +1116,7 @@ async function getGroupLogTarget(KV, sourceChatId) {
     };
   }
 
-  if (Number(sourceChatId) === Number(GROUP_ID)) {
-    return {
-      chat_id: Number(GROUP_ID),
-      thread_id: Number(LOG_THREAD_ID)
-    };
-  }
-
+  // Default: semua group fallback ke General group itu sendiri
   return {
     chat_id: Number(sourceChatId),
     thread_id: undefined
