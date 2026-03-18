@@ -1,4 +1,4 @@
-// command/group.js
+// commands/group.js
 
 import { GROUP_ID } from "../config.js";
 import {
