@@ -35,6 +35,7 @@ Jalankan langsung di group target:
 • /nonaktifkantemanops
 • /statustemanops
 • /aktifkanlogtemanops
+• /nonaktifkanlogtemanops
 • /banword add|del|list
 • /linkwhitelist add|del|list
 • /linkblacklist add|del|list
@@ -54,7 +55,7 @@ Jalankan langsung di group target:
 
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group target.
 ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
-ℹ️ Kalau belum pernah diaktifkan, log tetap ke General.
+ℹ️ /nonaktifkanlogtemanops mengembalikan log ke General.
 ℹ️ Untuk sekarang, setting moderation dilakukan langsung dari group.
 ℹ️ Welcome masih mode legacy.`
     );
