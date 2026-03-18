@@ -6,6 +6,8 @@ import {
   getKV,
   safeJSON,
   safeKVPut,
+  safeKVGet,
+  safeKVDelete,
   getGroupKV,
   gkey
 } from "../kv.js";
@@ -28,6 +30,19 @@ import {
   normalizeDomainInput,
   escapeBasicMarkdown
 } from "../utils.js";
+
+function getWelcomeSetupGroupKey(userId) {
+  return `welcome_setup_group:${userId}`;
+}
+
+function getWelcomeLinkTmpKey(userId) {
+  return `welcome_link_tmp:${userId}`;
+}
+
+async function clearWelcomeSetupSession(KV, userId) {
+  await safeKVDelete(KV, getWelcomeSetupGroupKey(userId));
+  await safeKVDelete(KV, getWelcomeLinkTmpKey(userId));
+}
 
 export async function handlePrivateCommand(API, msg, KV) {
   const parts = String(msg.text || "").trim().split(/\s+/);
@@ -74,6 +89,13 @@ export async function handlePrivateCommand(API, msg, KV) {
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
 
+*Welcome Commands*
+• /updatewelcometext
+• /updatewelcomemedia
+• /addwelcomelink
+• /delwelcomelink [judul]
+• /listwelcomelink
+
 *Group Runtime Commands*
 Jalankan langsung di group target:
 • /aktifkantemanops
@@ -85,14 +107,8 @@ Jalankan langsung di group target:
 • reply pesan user lalu /unmute
 • /listcmdgroup
 
-*Welcome Commands*
-• /updatewelcometext
-• /updatewelcomemedia
-• /addwelcomelink
-• /delwelcomelink [judul]
-• /listwelcomelink
-
-ℹ️ Sebelum manage banword / whitelist / blacklist / antiflood / mutetime, pilih group dulu pakai /listgroup lalu /setgroup [group_id]
+ℹ️ Semua config sensitif dijalankan via private bot.
+ℹ️ Sebelum manage config, pilih group dulu pakai /listgroup lalu /setgroup [group_id]
 ℹ️ Bot akan selalu tampilkan nama group + ID biar tidak ketuker.`
     );
   }
@@ -188,79 +204,8 @@ Gunakan:
 
   if (cmd === "/cleargroup") {
     await clearSelectedGroup(KV, userId);
+    await clearWelcomeSetupSession(KV, userId);
     return send(API, msg.chat.id, "🧹 Group target berhasil dihapus. Pilih lagi lewat /listgroup");
-  }
-
-  if (cmd === "/updatewelcomemedia") {
-    await setWelcomeStep(KV, msg.from.id, "media");
-    return send(API, msg.chat.id, "📸 Silakan kirim *foto / video / gif* untuk welcome media");
-  }
-
-  if (cmd === "/updatewelcometext") {
-    await setWelcomeStep(KV, msg.from.id, "text");
-    return send(
-      API,
-      msg.chat.id,
-`✍️ *Update Welcome Text*
-
-Silakan ketik welcome text.
-
-ℹ️ Placeholder tersedia:
-• {username} → username / mention klik
-• {nama} → nama saja
-
-Contoh:
-Selamat datang {username} di TeMan 🤍`
-    );
-  }
-
-  if (cmd === "/addwelcomelink") {
-    await setWelcomeStep(KV, msg.from.id, "link_title");
-    return send(API, msg.chat.id, "🧷 Silahkan kirim *judul button*");
-  }
-
-  if (cmd === "/delwelcomelink") {
-    const title = String(msg.text || "")
-      .replace(/^\/delwelcomelink(@\w+)?\s+/i, "")
-      .trim();
-
-    if (!title) {
-      return send(API, msg.chat.id, "❌ /delwelcomelink <judul>");
-    }
-
-    let links = safeJSON(await getKV(KV, "welcome_links"), []);
-    const before = links.length;
-
-    links = links.filter(
-      l => String(l.text || "").trim().toLowerCase() !== title.toLowerCase()
-    );
-
-    if (links.length === before) {
-      return send(API, msg.chat.id, "⚠️ Judul tidak ditemukan");
-    }
-
-    await safeKVPut(KV, "welcome_links", JSON.stringify(links));
-    return send(API, msg.chat.id, `🗑️ Welcome button dihapus:\n${title}`);
-  }
-
-  if (cmd === "/listwelcomelink") {
-    const links = safeJSON(await getKV(KV, "welcome_links"), []);
-
-    if (!links.length) {
-      return tg(API, "sendMessage", {
-        chat_id: msg.chat.id,
-        text: "📭 Welcome button masih kosong",
-        disable_web_page_preview: true
-      });
-    }
-
-    return tg(API, "sendMessage", {
-      chat_id: msg.chat.id,
-      text:
-        "Daftar Welcome Button\n\n" +
-        links.map((l, i) => `${i + 1}. ${l.text}\n${l.url}`).join("\n\n"),
-      disable_web_page_preview: true
-    });
   }
 
   const targetChatId = await getSelectedGroup(KV, userId);
@@ -280,10 +225,142 @@ Selamat datang {username} di TeMan 🤍`
 
     return {
       chatId: targetChatId,
-      title,
+      title: title || String(targetChatId),
       enabled
     };
   };
+
+  if (cmd === "/updatewelcomemedia") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    await clearWelcomeSetupSession(KV, userId);
+    await safeKVPut(KV, getWelcomeSetupGroupKey(userId), String(group.chatId));
+    await setWelcomeStep(KV, userId, "media");
+
+    return send(
+      API,
+      msg.chat.id,
+`📸 Silakan kirim *foto / video / gif* untuk welcome media
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\``
+    );
+  }
+
+  if (cmd === "/updatewelcometext") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    await clearWelcomeSetupSession(KV, userId);
+    await safeKVPut(KV, getWelcomeSetupGroupKey(userId), String(group.chatId));
+    await setWelcomeStep(KV, userId, "text");
+
+    return send(
+      API,
+      msg.chat.id,
+`✍️ *Update Welcome Text*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+Silakan ketik welcome text.
+
+ℹ️ Placeholder tersedia:
+• {username} → username / mention klik
+• {nama} → nama saja
+
+Contoh:
+Selamat datang {username} di TeMan 🤍`
+    );
+  }
+
+  if (cmd === "/addwelcomelink") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    await clearWelcomeSetupSession(KV, userId);
+    await safeKVPut(KV, getWelcomeSetupGroupKey(userId), String(group.chatId));
+    await setWelcomeStep(KV, userId, "link_title");
+
+    return send(
+      API,
+      msg.chat.id,
+`🧷 Silahkan kirim *judul button*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\``
+    );
+  }
+
+  if (cmd === "/delwelcomelink") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const title = String(msg.text || "")
+      .replace(/^\/delwelcomelink(@\w+)?\s+/i, "")
+      .trim();
+
+    if (!title) {
+      return send(API, msg.chat.id, "❌ /delwelcomelink <judul>");
+    }
+
+    let links = safeJSON(await getGroupKV(KV, group.chatId, "welcome_links"), []);
+    const before = links.length;
+
+    links = links.filter(
+      l => String(l.text || "").trim().toLowerCase() !== title.toLowerCase()
+    );
+
+    if (links.length === before) {
+      return send(
+        API,
+        msg.chat.id,
+`⚠️ Judul tidak ditemukan
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\``
+      );
+    }
+
+    await safeKVPut(KV, gkey(group.chatId, "welcome_links"), JSON.stringify(links));
+    return send(
+      API,
+      msg.chat.id,
+`🗑️ Welcome button dihapus
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🧷 Judul: ${escapeBasicMarkdown(title)}`
+    );
+  }
+
+  if (cmd === "/listwelcomelink") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const links = safeJSON(await getGroupKV(KV, group.chatId, "welcome_links"), []);
+
+    if (!links.length) {
+      return tg(API, "sendMessage", {
+        chat_id: msg.chat.id,
+        text:
+`📭 Welcome button masih kosong
+
+🏠 Group: ${group.title}
+🆔 ID: ${group.chatId}`,
+        disable_web_page_preview: true
+      });
+    }
+
+    return tg(API, "sendMessage", {
+      chat_id: msg.chat.id,
+      text:
+        `Daftar Welcome Button\n\n🏠 Group: ${group.title}\n🆔 ID: ${group.chatId}\n\n` +
+        links.map((l, i) => `${i + 1}. ${l.text}\n${l.url}`).join("\n\n"),
+      disable_web_page_preview: true
+    });
+  }
 
   if (cmd === "/banword") {
     const group = await requireSelectedGroup();
