@@ -14,39 +14,65 @@ export async function welcome(API, KV, chatId, user) {
       ? `@${user.username}`
       : escapeBasicMarkdown(user.first_name || "User");
 
-    const nama = user.first_name || "TeMan";
+    const nama = escapeBasicMarkdown(user.first_name || "TeMan");
 
     const textTpl = await getGroupKV(KV, targetChatId, "welcome_text");
     const links = safeJSON(await getGroupKV(KV, targetChatId, "welcome_links"), []);
+    const media = safeJSON(await getGroupKV(KV, targetChatId, "welcome_media"), null);
 
     const text = String(textTpl || DEFAULTS.welcome_text)
       .replace(/{username}/gi, username)
       .replace(/{nama}/gi, nama);
 
-    const media = safeJSON(await getGroupKV(KV, targetChatId, "welcome_media"), null);
-    if (!media?.file_id || !media?.type) return;
-
-    let method = "sendPhoto";
-    let key = "photo";
-
-    if (media.type === "video") {
-      method = "sendVideo";
-      key = "video";
-    } else if (media.type === "animation") {
-      method = "sendAnimation";
-      key = "animation";
-    }
-
     const buttons = buildWelcomeButtons(links);
 
-    await tg(API, method, {
+    let mediaSent = false;
+
+    if (media?.file_id && media?.type) {
+      let method = "sendPhoto";
+      let key = "photo";
+
+      if (media.type === "video") {
+        method = "sendVideo";
+        key = "video";
+      } else if (media.type === "animation") {
+        method = "sendAnimation";
+        key = "animation";
+      }
+
+      const res = await tg(API, method, {
+        chat_id: targetChatId,
+        [key]: media.file_id,
+        caption: text,
+        parse_mode: "Markdown",
+        reply_markup: buttons.length
+          ? { inline_keyboard: buttons }
+          : undefined
+      });
+
+      mediaSent = !!res?.ok;
+    }
+
+    // fallback: kalau media belum ada / gagal, tetap kirim welcome message
+    if (!mediaSent) {
+      await tg(API, "sendMessage", {
+        chat_id: targetChatId,
+        text,
+        parse_mode: "Markdown",
+        disable_web_page_preview: true,
+        reply_markup: buttons.length
+          ? { inline_keyboard: buttons }
+          : undefined
+      });
+      return;
+    }
+
+    // tambahan welcome note terpisah
+    await tg(API, "sendMessage", {
       chat_id: targetChatId,
-      [key]: media.file_id,
-      caption: text,
+      text,
       parse_mode: "Markdown",
-      reply_markup: buttons.length
-        ? { inline_keyboard: buttons }
-        : undefined
+      disable_web_page_preview: true
     });
   } catch (err) {
     console.log("WELCOME FAILED:", err?.message || err);
