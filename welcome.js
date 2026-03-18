@@ -14,54 +14,42 @@ export async function welcome(API, KV, chatId, user) {
       ? `@${user.username}`
       : escapeBasicMarkdown(user.first_name || "User");
 
-    const nama = escapeBasicMarkdown(user.first_name || "TeMan");
+    const nama = user.first_name || "TeMan";
 
     const textTpl = await getGroupKV(KV, targetChatId, "welcome_text");
     const links = safeJSON(await getGroupKV(KV, targetChatId, "welcome_links"), []);
-    const media = safeJSON(await getGroupKV(KV, targetChatId, "welcome_media"), null);
 
     const text = String(textTpl || DEFAULTS.welcome_text)
       .replace(/{username}/gi, username)
       .replace(/{nama}/gi, nama);
 
-    const buttons = buildWelcomeButtons(links);
+    const media = safeJSON(await getGroupKV(KV, targetChatId, "welcome_media"), null);
+    if (!media?.file_id || !media?.type) return;
 
-    let mediaSent = false;
+    let method = "sendPhoto";
+    let key = "photo";
 
-    if (media?.file_id && media?.type) {
-      let method = "sendPhoto";
-      let key = "photo";
-
-      if (media.type === "video") {
-        method = "sendVideo";
-        key = "video";
-      } else if (media.type === "animation") {
-        method = "sendAnimation";
-        key = "animation";
-      }
-
-      const res = await tg(API, method, {
-        chat_id: targetChatId,
-        [key]: media.file_id
-      });
-
-      mediaSent = !!res?.ok;
+    if (media.type === "video") {
+      method = "sendVideo";
+      key = "video";
+    } else if (media.type === "animation") {
+      method = "sendAnimation";
+      key = "animation";
     }
 
-    await tg(API, "sendMessage", {
+    const buttons = buildWelcomeButtons(links);
+
+    await tg(API, method, {
       chat_id: targetChatId,
-      text,
+      [key]: media.file_id,
+      caption: text,
       parse_mode: "Markdown",
-      disable_web_page_preview: true,
       reply_markup: buttons.length
         ? { inline_keyboard: buttons }
         : undefined
     });
-
-    return mediaSent;
   } catch (err) {
     console.log("WELCOME FAILED:", err?.message || err);
-    return false;
   }
 }
 
