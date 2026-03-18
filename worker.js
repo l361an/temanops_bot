@@ -1,3 +1,5 @@
+// worker.js
+
 import { GROUP_ID } from "./config.js";
 import { handleGroupCommand } from "./commands/group.js";
 import { handlePrivateCommand } from "./commands/private.js";
@@ -15,9 +17,31 @@ import {
   getKV,
   safeKVGet,
   safeKVPut,
-  safeKVDelete
+  safeKVDelete,
+  gkey
 } from "./kv.js";
-import { shouldRunModeration } from "./status.js";
+import { shouldRunModeration, getTemanOpsTitle } from "./status.js";
+import { escapeBasicMarkdown } from "./utils.js";
+
+function getWelcomeSetupGroupKey(userId) {
+  return `welcome_setup_group:${userId}`;
+}
+
+function getWelcomeLinkTmpKey(userId) {
+  return `welcome_link_tmp:${userId}`;
+}
+
+async function readWelcomeTargetChatId(KV, userId) {
+  const raw = await safeKVGet(KV, getWelcomeSetupGroupKey(userId));
+  if (raw && /^-?\d+$/.test(raw)) return Number(raw);
+  return null;
+}
+
+async function clearWelcomeSession(KV, userId) {
+  await clearWelcomeStep(KV, userId);
+  await safeKVDelete(KV, getWelcomeSetupGroupKey(userId));
+  await safeKVDelete(KV, getWelcomeLinkTmpKey(userId));
+}
 
 export default {
   async fetch(req, env) {
@@ -32,7 +56,8 @@ export default {
     console.log("UPDATE:", JSON.stringify(update));
 
     try {
-      if (update.chat_member?.chat?.id === GROUP_ID) {
+      if (update.chat_member?.chat?.id) {
+        const memberChatId = Number(update.chat_member.chat.id);
         const { old_chat_member, new_chat_member } = update.chat_member;
 
         const oldStatus = old_chat_member?.status;
@@ -51,11 +76,15 @@ export default {
         const justJoined = !oldIsMember && newIsMember;
 
         if (newUser?.id) {
-          await cacheUserIdentity(KV, GROUP_ID, newUser);
+          await cacheUserIdentity(KV, memberChatId, newUser);
         }
 
-        if (justJoined && !newUser?.is_bot) {
-          await welcome(API, KV, newUser);
+        if (
+          justJoined &&
+          !newUser?.is_bot &&
+          await shouldRunModeration(KV, memberChatId)
+        ) {
+          await welcome(API, KV, memberChatId, newUser);
         }
 
         return new Response("OK");
@@ -90,10 +119,15 @@ export default {
         }
       }
 
-      if (msg?.chat?.id === GROUP_ID && Array.isArray(msg.new_chat_members)) {
-        for (const member of msg.new_chat_members) {
-          if (!member?.is_bot) {
-            await welcome(API, KV, member);
+      if (
+        ["group", "supergroup"].includes(msg.chat.type) &&
+        Array.isArray(msg.new_chat_members)
+      ) {
+        if (await shouldRunModeration(KV, chatId)) {
+          for (const member of msg.new_chat_members) {
+            if (!member?.is_bot) {
+              await welcome(API, KV, chatId, member);
+            }
           }
         }
         return new Response("OK");
@@ -110,7 +144,9 @@ export default {
 
       if (msg.chat.type === "private" && msg.text?.startsWith("/")) {
         const step = await getWelcomeStep(KV, msg.from?.id);
-        if (step && msg.from?.id) await clearWelcomeStep(KV, msg.from.id);
+        if (step && msg.from?.id) {
+          await clearWelcomeSession(KV, msg.from.id);
+        }
 
         await handlePrivateCommand(API, msg, KV);
         return new Response("OK");
@@ -122,6 +158,19 @@ export default {
 
         const step = await getWelcomeStep(KV, userId);
         if (!step) return new Response("OK");
+
+        const targetChatId = await readWelcomeTargetChatId(KV, userId);
+        if (!targetChatId) {
+          await clearWelcomeSession(KV, userId);
+          await send(
+            API,
+            msg.chat.id,
+            "❌ Sesi config welcome tidak valid.\nPilih lagi group target dengan /listgroup lalu /setgroup, lalu ulangi command welcome."
+          );
+          return new Response("OK");
+        }
+
+        const targetTitle = await getTemanOpsTitle(KV, targetChatId);
 
         if (step === "media") {
           let fileId = null;
@@ -143,10 +192,21 @@ export default {
             return new Response("OK");
           }
 
-          await safeKVPut(KV, "welcome_media", JSON.stringify({ type, file_id: fileId }));
-          await clearWelcomeStep(KV, userId);
+          await safeKVPut(
+            KV,
+            gkey(targetChatId, "welcome_media"),
+            JSON.stringify({ type, file_id: fileId })
+          );
+          await clearWelcomeSession(KV, userId);
 
-          await send(API, msg.chat.id, "✅ Welcome media berhasil disimpan");
+          await send(
+            API,
+            msg.chat.id,
+`✅ Welcome media berhasil disimpan
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\``
+          );
           return new Response("OK");
         }
 
@@ -156,10 +216,17 @@ export default {
             return new Response("OK");
           }
 
-          await safeKVPut(KV, "welcome_text", msg.text);
-          await clearWelcomeStep(KV, userId);
+          await safeKVPut(KV, gkey(targetChatId, "welcome_text"), msg.text);
+          await clearWelcomeSession(KV, userId);
 
-          await send(API, msg.chat.id, "✅ Welcome text berhasil disimpan");
+          await send(
+            API,
+            msg.chat.id,
+`✅ Welcome text berhasil disimpan
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\``
+          );
           return new Response("OK");
         }
 
@@ -171,12 +238,22 @@ export default {
 
           await safeKVPut(
             KV,
-            `welcome_link_tmp:${userId}`,
-            JSON.stringify({ text: msg.text })
+            getWelcomeLinkTmpKey(userId),
+            JSON.stringify({
+              chat_id: targetChatId,
+              text: msg.text
+            })
           );
 
           await setWelcomeStep(KV, userId, "link_url");
-          await send(API, msg.chat.id, "🔗 Sekarang kirim *URL link*");
+          await send(
+            API,
+            msg.chat.id,
+`🔗 Sekarang kirim *URL link*
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\``
+          );
           return new Response("OK");
         }
 
@@ -186,12 +263,11 @@ export default {
             return new Response("OK");
           }
 
-          const tmp = safeJSON(await safeKVGet(KV, `welcome_link_tmp:${userId}`), {});
-          let links = safeJSON(await getKV(KV, "welcome_links"), []);
+          const tmp = safeJSON(await safeKVGet(KV, getWelcomeLinkTmpKey(userId)), {});
+          let links = safeJSON(await getKV(KV, gkey(targetChatId, "welcome_links")), []);
 
-          if (!tmp?.text) {
-            await clearWelcomeStep(KV, userId);
-            await safeKVDelete(KV, `welcome_link_tmp:${userId}`);
+          if (!tmp?.text || Number(tmp.chat_id) !== Number(targetChatId)) {
+            await clearWelcomeSession(KV, userId);
             await send(API, msg.chat.id, "❌ Sesi link tidak valid. Ulangi /addwelcomelink");
             return new Response("OK");
           }
@@ -201,11 +277,21 @@ export default {
             url: msg.text
           });
 
-          await safeKVPut(KV, "welcome_links", JSON.stringify(links));
-          await safeKVDelete(KV, `welcome_link_tmp:${userId}`);
-          await clearWelcomeStep(KV, userId);
+          await safeKVPut(
+            KV,
+            gkey(targetChatId, "welcome_links"),
+            JSON.stringify(links)
+          );
+          await clearWelcomeSession(KV, userId);
 
-          await send(API, msg.chat.id, "✅ Welcome button berhasil ditambahkan");
+          await send(
+            API,
+            msg.chat.id,
+`✅ Welcome button berhasil ditambahkan
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\``
+          );
           return new Response("OK");
         }
 
