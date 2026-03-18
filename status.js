@@ -64,6 +64,60 @@ export async function getGroupLogTarget(KV, sourceChatId) {
   };
 }
 
+export async function listTemanOpsGroups(KV) {
+  const groups = [];
+  let cursor = undefined;
+
+  try {
+    do {
+      const page = await KV.list({
+        prefix: "temanops_group_registry:",
+        cursor
+      });
+
+      for (const key of page.keys || []) {
+        const rawId = String(key.name || "").replace("temanops_group_registry:", "");
+        const chatId = Number(rawId);
+        if (!chatId) continue;
+
+        const enabled = await isTemanOpsEnabled(KV, chatId);
+        const title = await getTemanOpsTitle(KV, chatId);
+
+        groups.push({
+          chat_id: chatId,
+          title,
+          enabled
+        });
+      }
+
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+
+    groups.sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return String(a.title || "").localeCompare(String(b.title || ""));
+    });
+
+    return groups;
+  } catch (err) {
+    console.log("LIST TEMANOPS GROUPS FAILED:", err?.message || err);
+    return [];
+  }
+}
+
+export async function getTemanOpsGroupSummary(KV, chatId) {
+  const title = await getTemanOpsTitle(KV, chatId);
+  const enabled = await isTemanOpsEnabled(KV, chatId);
+  const logTarget = await getGroupLogTarget(KV, chatId);
+
+  return {
+    chat_id: Number(chatId),
+    title,
+    enabled,
+    log_label: logTarget?.thread_id ? `Topic ID ${logTarget.thread_id}` : "General"
+  };
+}
+
 export async function punish(API, msg, KV, reason) {
   const chatId = Number(msg.chat.id);
   const min = getSafeNumber(await getGroupKV(KV, chatId, "mute_minutes"), 60);
