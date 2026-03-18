@@ -52,6 +52,10 @@ export default {
         const newUser = new_chat_member?.user;
         const justJoined = !oldIsMember && newIsMember;
 
+        if (newUser?.id) {
+          await cacheUserIdentity(KV, GROUP_ID, newUser);
+        }
+
         if (justJoined && !newUser?.is_bot) {
           await welcome(API, KV, newUser);
         }
@@ -72,6 +76,23 @@ export default {
       }
 
       const chatId = Number(msg.chat.id);
+
+      // ===== CACHE USER IDENTITIES =====
+      if (msg.from?.id && !msg.from?.is_bot) {
+        await cacheUserIdentity(KV, chatId, msg.from);
+      }
+
+      if (msg.reply_to_message?.from?.id && !msg.reply_to_message?.from?.is_bot) {
+        await cacheUserIdentity(KV, chatId, msg.reply_to_message.from);
+      }
+
+      if (Array.isArray(msg.new_chat_members)) {
+        for (const member of msg.new_chat_members) {
+          if (member?.id && !member?.is_bot) {
+            await cacheUserIdentity(KV, chatId, member);
+          }
+        }
+      }
 
       // ===== FALLBACK JOIN VIA new_chat_members (legacy welcome: group lama saja) =====
       if (msg?.chat?.id === GROUP_ID && Array.isArray(msg.new_chat_members)) {
@@ -343,9 +364,10 @@ async function handleGroupCommand(API, msg, KV) {
 • /setmutetime [menit]
 
 *User Control*
-• /unmute [user_id]
+• /unmute [@username|user_id]
+• reply pesan user lalu /unmute
 
-ℹ️ Semua command ini dijalankan langsung di group target`
+ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
     return true;
   }
@@ -531,24 +553,71 @@ async function handleGroupCommand(API, msg, KV) {
   }
 
   if (cmd === "/unmute") {
-    const uid = Number(a);
-    if (!uid) {
-      await send(API, msg.chat.id, "❌ /unmute <user_id>");
+    let targetId = null;
+    let targetLabel = "";
+
+    if (msg.reply_to_message?.from?.id) {
+      targetId = Number(msg.reply_to_message.from.id);
+      targetLabel = msg.reply_to_message.from.username
+        ? `@${msg.reply_to_message.from.username}`
+        : String(targetId);
+    } else {
+      const rawTarget = String(a || "").trim();
+
+      if (!rawTarget) {
+        await send(
+          API,
+          msg.chat.id,
+          "❌ Gunakan: /unmute @username atau user_id, atau reply pesan user lalu kirim /unmute"
+        );
+        return true;
+      }
+
+      if (/^\d+$/.test(rawTarget)) {
+        targetId = Number(rawTarget);
+        targetLabel = rawTarget;
+      } else if (/^@[\w\d_]{5,}$/.test(rawTarget)) {
+        const username = rawTarget.slice(1).toLowerCase();
+        const resolvedId = await getCachedUserIdByUsername(KV, chatId, username);
+
+        if (!resolvedId) {
+          await send(
+            API,
+            msg.chat.id,
+            "❌ Username belum ditemukan di cache bot.\nSuruh user kirim pesan dulu di group, atau reply pesan user, atau pakai user_id."
+          );
+          return true;
+        }
+
+        targetId = Number(resolvedId);
+        targetLabel = rawTarget;
+      } else {
+        await send(
+          API,
+          msg.chat.id,
+          "❌ Format salah. Gunakan: /unmute @username atau user_id"
+        );
+        return true;
+      }
+    }
+
+    if (!targetId) {
+      await send(API, msg.chat.id, "❌ User tidak ditemukan");
       return true;
     }
 
-    const ok = await unmute(API, chatId, uid);
+    const ok = await unmute(API, chatId, targetId);
 
     if (!ok) {
       await send(
         API,
         msg.chat.id,
-        `❌ Unmute gagal untuk user ID ${uid}\nCek apakah bot masih admin dan punya izin restrict members.`
+        `❌ Unmute gagal untuk ${targetLabel || targetId}\nCek apakah bot masih admin dan punya izin restrict members.`
       );
       return true;
     }
 
-    await send(API, msg.chat.id, `🔓 UNMUTE BERHASIL\nUser ID: ${uid}`);
+    await send(API, msg.chat.id, `🔓 UNMUTE BERHASIL\nTarget: ${targetLabel || targetId}`);
     return true;
   }
 
@@ -589,7 +658,8 @@ Jalankan langsung di group target:
 • /linkblacklist add|del|list
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
-• /unmute [user_id]
+• /unmute [@username|user_id]
+• reply pesan user lalu /unmute
 • /listcmdgroup
 
 *Private Commands*
@@ -600,6 +670,7 @@ Jalankan langsung di group target:
 • /delwelcomelink [judul]
 • /listwelcomelink
 
+ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group target.
 ℹ️ Untuk sekarang, setting moderation dilakukan langsung dari group.
 ℹ️ Welcome masih mode legacy.`
     );
@@ -1021,6 +1092,47 @@ async function getGroupLogTarget(KV, sourceChatId) {
   };
 }
 
+// ================== USER CACHE ==================
+async function cacheUserIdentity(KV, chatId, user) {
+  try {
+    if (!user?.id || user?.is_bot) return false;
+
+    const uid = Number(user.id);
+    await safeKVPut(KV, `usercache:id:${uid}`, JSON.stringify({
+      id: uid,
+      username: user.username || "",
+      first_name: user.first_name || "",
+      last_name: user.last_name || ""
+    }));
+
+    if (user.username) {
+      const uname = String(user.username).trim().replace(/^@/, "").toLowerCase();
+      if (uname) {
+        await safeKVPut(KV, `usercache:group:${chatId}:uname:${uname}`, String(uid));
+        await safeKVPut(KV, `usercache:global:uname:${uname}`, String(uid));
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.log("CACHE USER FAILED:", err?.message || err);
+    return false;
+  }
+}
+
+async function getCachedUserIdByUsername(KV, chatId, username) {
+  const uname = String(username || "").trim().replace(/^@/, "").toLowerCase();
+  if (!uname) return null;
+
+  const local = await safeKVGet(KV, `usercache:group:${chatId}:uname:${uname}`);
+  if (local && /^\d+$/.test(local)) return Number(local);
+
+  const global = await safeKVGet(KV, `usercache:global:uname:${uname}`);
+  if (global && /^\d+$/.test(global)) return Number(global);
+
+  return null;
+}
+
 // ================== PER-GROUP KV ==================
 function gkey(chatId, key) {
   return `group:${chatId}:${key}`;
@@ -1222,10 +1334,7 @@ async function canUseGroupAdminCommands(API, msg, KV) {
   }
 
   if (isAnonymousGroupAdminMessage(msg)) {
-    return {
-      ok: false,
-      message: "❌ Untuk command setting group, matikan anonymous admin dulu atau kirim sebagai akun admin biasa."
-    };
+    return { ok: true };
   }
 
   const admin = await isAdmin(API, chatId, msg.from?.id);
