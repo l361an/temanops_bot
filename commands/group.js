@@ -39,7 +39,12 @@ export async function handleGroupCommand(API, msg, KV) {
     "/linkwhitelist",
     "/linkblacklist",
     "/antiflood",
-    "/setmutetime"
+    "/setmutetime",
+    "/updatewelcometext",
+    "/updatewelcomemedia",
+    "/addwelcomelink",
+    "/delwelcomelink",
+    "/listwelcomelink"
   ]);
 
   if (!["group", "supergroup"].includes(msg.chat.type)) {
@@ -54,7 +59,7 @@ export async function handleGroupCommand(API, msg, KV) {
     await send(
       API,
       msg.chat.id,
-      "ℹ️ Command config ini sekarang dijalankan via private bot.\nGunakan /listcmd di private, lalu pilih group target dengan /listgroup dan /setgroup."
+      "ℹ️ Command config ini sekarang dijalankan via private bot.\nGunakan /listgroup di private, lalu pilih group target dengan /setgroup.\nBot akan tampilkan nama group + ID agar tidak ketuker."
     );
     return true;
   }
@@ -182,8 +187,7 @@ export async function handleGroupCommand(API, msg, KV) {
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 
-*Config Commands*
-Jalankan via private bot:
+*Config Commands via Private Bot*
 • /listgroup
 • /setgroup [group_id]
 • /groupaktif
@@ -193,8 +197,13 @@ Jalankan via private bot:
 • /linkblacklist add|del|list
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
+• /updatewelcometext
+• /updatewelcomemedia
+• /addwelcomelink
+• /delwelcomelink [judul]
+• /listwelcomelink
 
-ℹ️ Untuk config moderation, jalankan di private bot agar tidak terlihat member.
+ℹ️ Untuk config moderation dan welcome, jalankan di private bot agar tidak terlihat member.
 ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
 ℹ️ /nonaktifkanlogtemanops mengembalikan log ke General.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
