@@ -33,7 +33,7 @@ export default {
     console.log("UPDATE:", JSON.stringify(update));
 
     try {
-      // ===== JOIN VIA chat_member =====
+      // ===== JOIN VIA chat_member (legacy welcome: group lama saja) =====
       if (update.chat_member?.chat?.id === GROUP_ID) {
         const { old_chat_member, new_chat_member } = update.chat_member;
 
@@ -50,7 +50,6 @@ export default {
           (newStatus === "restricted" && new_chat_member?.is_member === true);
 
         const newUser = new_chat_member?.user;
-
         const justJoined = !oldIsMember && newIsMember;
 
         if (justJoined && !newUser?.is_bot) {
@@ -72,7 +71,9 @@ export default {
         return new Response("OK");
       }
 
-      // ===== FALLBACK JOIN VIA new_chat_members =====
+      const chatId = Number(msg.chat.id);
+
+      // ===== FALLBACK JOIN VIA new_chat_members (legacy welcome: group lama saja) =====
       if (msg?.chat?.id === GROUP_ID && Array.isArray(msg.new_chat_members)) {
         for (const member of msg.new_chat_members) {
           if (!member?.is_bot) {
@@ -80,18 +81,28 @@ export default {
           }
         }
         return new Response("OK");
-      }      
+      }
+
+      // ===== GROUP COMMANDS =====
+      if (
+        ["group", "supergroup"].includes(msg.chat.type) &&
+        typeof msg.text === "string" &&
+        msg.text.startsWith("/")
+      ) {
+        const handled = await handleGroupCommand(API, msg, KV);
+        if (handled) return new Response("OK");
+      }
 
       // ===== PRIVATE COMMAND =====
       if (msg.chat.type === "private" && msg.text?.startsWith("/")) {
         const step = await getWelcomeStep(KV, msg.from?.id);
         if (step && msg.from?.id) await clearWelcomeStep(KV, msg.from.id);
 
-        await handleCommand(API, msg, KV);
+        await handlePrivateCommand(API, msg, KV);
         return new Response("OK");
       }
 
-      // ===== WELCOME SETUP (PRIVATE ONLY) =====
+      // ===== WELCOME SETUP (PRIVATE ONLY / LEGACY) =====
       if (msg.chat.type === "private") {
         const userId = msg.from?.id;
         if (!userId) return new Response("OK");
@@ -99,7 +110,6 @@ export default {
         const step = await getWelcomeStep(KV, userId);
         if (!step) return new Response("OK");
 
-        // === MEDIA ===
         if (step === "media") {
           let fileId = null;
           let type = null;
@@ -127,7 +137,6 @@ export default {
           return new Response("OK");
         }
 
-        // === TEXT ===
         if (step === "text") {
           if (!msg.text) {
             await send(API, msg.chat.id, "❌ Kirim *teks*, bukan media");
@@ -141,7 +150,6 @@ export default {
           return new Response("OK");
         }
 
-        // === LINK TITLE ===
         if (step === "link_title") {
           if (!msg.text) {
             await send(API, msg.chat.id, "❌ Kirim *judul button*");
@@ -159,7 +167,6 @@ export default {
           return new Response("OK");
         }
 
-        // === LINK URL ===
         if (step === "link_url") {
           if (!msg.text || !/^https?:\/\//i.test(msg.text)) {
             await send(API, msg.chat.id, "❌ URL tidak valid");
@@ -199,7 +206,12 @@ export default {
       }
 
       // ===== GROUP MODERATION =====
-      if (msg.chat.id === GROUP_ID && msg.from && !msg.from.is_bot) {
+      if (
+        ["group", "supergroup"].includes(msg.chat.type) &&
+        msg.from &&
+        !msg.from.is_bot &&
+        await shouldRunModeration(KV, chatId)
+      ) {
         await handleModeration(API, msg, KV);
       }
 
@@ -210,6 +222,458 @@ export default {
     }
   }
 };
+
+// ================== GROUP COMMANDS ==================
+async function handleGroupCommand(API, msg, KV) {
+  const parts = String(msg.text || "").trim().split(/\s+/);
+  const raw = parts[0] || "";
+  const a = parts[1];
+  const b = parts[2];
+  const cmd = raw.split("@")[0].toLowerCase();
+  const chatId = Number(msg.chat.id);
+
+  const groupOnlyCommands = new Set([
+    "/aktifkantemanops",
+    "/nonaktifkantemanops",
+    "/statustemanops",
+    "/banword",
+    "/linkwhitelist",
+    "/linkblacklist",
+    "/antiflood",
+    "/setmutetime",
+    "/unmute",
+    "/listcmdgroup"
+  ]);
+
+  if (!groupOnlyCommands.has(cmd)) return false;
+
+  if (!["group", "supergroup"].includes(msg.chat.type)) {
+    await send(API, msg.chat.id, "❌ Command ini hanya di group");
+    return true;
+  }
+
+  if (cmd === "/aktifkantemanops") {
+    const allowed = await canManageTemanOps(API, msg);
+    if (!allowed) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
+      );
+      return true;
+    }
+
+    await setTemanOpsEnabled(KV, chatId, true);
+    await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
+    await setGroupLogTarget(KV, chatId, chatId, null);
+
+    await send(API, msg.chat.id, "✅ *TeManOps aktif* di group ini");
+    return true;
+  }
+
+  if (cmd === "/nonaktifkantemanops") {
+    const allowed = await canManageTemanOps(API, msg);
+    if (!allowed) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
+      );
+      return true;
+    }
+
+    if (chatId === Number(GROUP_ID)) {
+      await send(API, msg.chat.id, "⚠️ Group legacy utama tidak bisa dinonaktifkan pada tahap ini");
+      return true;
+    }
+
+    await setTemanOpsEnabled(KV, chatId, false);
+    await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
+
+    await send(API, msg.chat.id, "⛔ *TeManOps nonaktif* di group ini");
+    return true;
+  }
+
+  if (cmd === "/statustemanops") {
+    const enabled = await isTemanOpsEnabled(KV, chatId);
+    const title = await getTemanOpsTitle(KV, chatId);
+
+    await send(
+      API,
+      msg.chat.id,
+      enabled
+        ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}`
+        : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}`
+    );
+    return true;
+  }
+
+  const adminAllowed = await canUseGroupAdminCommands(API, msg, KV);
+  if (!adminAllowed.ok) {
+    await send(API, msg.chat.id, adminAllowed.message);
+    return true;
+  }
+
+  if (cmd === "/listcmdgroup") {
+    await send(
+      API,
+      msg.chat.id,
+`🛠️ *Group Commands*
+
+*Status*
+• /aktifkantemanops
+• /nonaktifkantemanops
+• /statustemanops
+
+*Moderation*
+• /banword add [kata]
+• /banword del [kata]
+• /banword list
+
+• /linkwhitelist add [domain]
+• /linkwhitelist del [domain]
+• /linkwhitelist list
+
+• /linkblacklist add [domain]
+• /linkblacklist del [domain]
+• /linkblacklist list
+
+*Anti Spam*
+• /antiflood [limit] [detik]
+• /setmutetime [menit]
+
+*User Control*
+• /unmute [user_id]
+
+ℹ️ Semua command ini dijalankan langsung di group target`
+    );
+    return true;
+  }
+
+  if (cmd === "/banword") {
+    if (!a) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Format:\n/banword add <kata>\n/banword del <kata>\n/banword list"
+      );
+      return true;
+    }
+
+    let list = String(await getGroupKV(KV, chatId, "banned_words"))
+      .split(",")
+      .map(x => x.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (a === "list") {
+      if (list.length === 0) {
+        await send(API, msg.chat.id, "📭 Banword masih kosong");
+        return true;
+      }
+
+      await send(
+        API,
+        msg.chat.id,
+        `🚫 *Daftar Banword*\n\n${list.map((w, i) => `${i + 1}. ${escapeBasicMarkdown(w)}`).join("\n")}`
+      );
+      return true;
+    }
+
+    if (!b) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Format:\n/banword add <kata>\n/banword del <kata>"
+      );
+      return true;
+    }
+
+    const action = a.toLowerCase();
+    const word = b.toLowerCase();
+
+    if (action === "add") {
+      if (list.includes(word)) {
+        await send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* sudah ada`);
+        return true;
+      }
+      list.push(word);
+      await safeKVPut(KV, gkey(chatId, "banned_words"), list.join(","));
+      await send(API, msg.chat.id, `✅ Kata *${escapeBasicMarkdown(word)}* ditambahkan`);
+      return true;
+    }
+
+    if (action === "del") {
+      if (!list.includes(word)) {
+        await send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* tidak ditemukan`);
+        return true;
+      }
+      list = list.filter(w => w !== word);
+      await safeKVPut(KV, gkey(chatId, "banned_words"), list.join(","));
+      await send(API, msg.chat.id, `🗑️ Kata *${escapeBasicMarkdown(word)}* dihapus`);
+      return true;
+    }
+
+    await send(API, msg.chat.id, "❌ Gunakan add / del / list");
+    return true;
+  }
+
+  if (cmd === "/linkwhitelist") {
+    if (!["add", "del", "list"].includes(a)) {
+      await send(API, msg.chat.id, "❌ /linkwhitelist add|del|list [domain]");
+      return true;
+    }
+
+    let list = safeJSON(await getGroupKV(KV, chatId, "link_whitelist"), []);
+
+    if (a === "list") {
+      await send(API, msg.chat.id, renderAdminList("✅ Link Whitelist", list));
+      return true;
+    }
+
+    if (!b) {
+      await send(API, msg.chat.id, "❌ Domain kosong");
+      return true;
+    }
+
+    const domain = normalizeDomainInput(b);
+
+    if (a === "add") {
+      if (list.includes(domain)) {
+        await send(API, msg.chat.id, "⚠️ Domain sudah ada");
+        return true;
+      }
+      list.push(domain);
+    }
+
+    if (a === "del") {
+      const before = list.length;
+      list = list.filter(d => d !== domain);
+
+      if (list.length === before) {
+        await send(API, msg.chat.id, "⚠️ Domain tidak ditemukan");
+        return true;
+      }
+    }
+
+    await safeKVPut(KV, gkey(chatId, "link_whitelist"), JSON.stringify(list));
+    await send(API, msg.chat.id, `✅ Whitelist diupdate:\n${escapeBasicMarkdown(domain)}`);
+    return true;
+  }
+
+  if (cmd === "/linkblacklist") {
+    if (!["add", "del", "list"].includes(a)) {
+      await send(API, msg.chat.id, "❌ /linkblacklist add|del|list [domain]");
+      return true;
+    }
+
+    let list = safeJSON(await getGroupKV(KV, chatId, "link_blacklist"), []);
+
+    if (a === "list") {
+      await send(API, msg.chat.id, renderAdminList("⛔ Link Blacklist", list));
+      return true;
+    }
+
+    if (!b) {
+      await send(API, msg.chat.id, "❌ Domain kosong");
+      return true;
+    }
+
+    const domain = normalizeDomainInput(b);
+
+    if (a === "add") {
+      if (list.includes(domain)) {
+        await send(API, msg.chat.id, "⚠️ Domain sudah ada");
+        return true;
+      }
+      list.push(domain);
+    }
+
+    if (a === "del") {
+      const before = list.length;
+      list = list.filter(d => d !== domain);
+
+      if (list.length === before) {
+        await send(API, msg.chat.id, "⚠️ Domain tidak ditemukan");
+        return true;
+      }
+    }
+
+    await safeKVPut(KV, gkey(chatId, "link_blacklist"), JSON.stringify(list));
+    await send(API, msg.chat.id, `⛔ Blacklist diupdate:\n${escapeBasicMarkdown(domain)}`);
+    return true;
+  }
+
+  if (cmd === "/antiflood") {
+    const limit = Number(a);
+    const win = Number(b);
+
+    if (!limit || !win || limit <= 0 || win <= 0) {
+      await send(API, msg.chat.id, "❌ Format: /antiflood <limit> <detik>");
+      return true;
+    }
+
+    await safeKVPut(KV, gkey(chatId, "flood_limit"), String(limit));
+    await safeKVPut(KV, gkey(chatId, "flood_window"), String(win));
+    await send(API, msg.chat.id, `✅ Anti flood diset: ${limit} pesan / ${win} detik`);
+    return true;
+  }
+
+  if (cmd === "/setmutetime") {
+    const n = Number(a);
+    if (!n || n <= 0) {
+      await send(API, msg.chat.id, "❌ Angka invalid");
+      return true;
+    }
+
+    await safeKVPut(KV, gkey(chatId, "mute_minutes"), String(n));
+    await send(API, msg.chat.id, `⏱️ Mute diset ${n} menit`);
+    return true;
+  }
+
+  if (cmd === "/unmute") {
+    const uid = Number(a);
+    if (!uid) {
+      await send(API, msg.chat.id, "❌ /unmute <user_id>");
+      return true;
+    }
+
+    await unmute(API, chatId, uid);
+    await send(API, msg.chat.id, `🔓 UNMUTE BERHASIL\nUser ID: ${uid}`);
+    return true;
+  }
+
+  return false;
+}
+
+// ================== PRIVATE COMMANDS ==================
+async function handlePrivateCommand(API, msg, KV) {
+  const parts = String(msg.text || "").trim().split(/\s+/);
+  const raw = parts[0] || "";
+  const cmd = raw.split("@")[0].toLowerCase();
+
+  if (cmd.includes("_")) {
+    return send(
+      API,
+      msg.chat.id,
+      "❌ Command tidak memakai underscore.\nGunakan:\n/linkwhitelist atau /linkblacklist"
+    );
+  }
+
+  if (msg.chat.type !== "private") {
+    return send(API, msg.chat.id, "❌ Command hanya via private bot");
+  }
+
+  if (cmd === "/listcmd" || cmd === "/help") {
+    return send(
+      API,
+      msg.chat.id,
+`🛠️ *TeManOps*
+
+*Group Commands*
+Jalankan langsung di group target:
+• /aktifkantemanops
+• /nonaktifkantemanops
+• /statustemanops
+• /banword add|del|list
+• /linkwhitelist add|del|list
+• /linkblacklist add|del|list
+• /antiflood [limit] [detik]
+• /setmutetime [menit]
+• /unmute [user_id]
+• /listcmdgroup
+
+*Private Commands*
+• /listcmd
+• /updatewelcometext
+• /updatewelcomemedia
+• /addwelcomelink
+• /delwelcomelink [judul]
+• /listwelcomelink
+
+ℹ️ Untuk sekarang, setting moderation dilakukan langsung dari group.
+ℹ️ Welcome masih mode legacy.`
+    );
+  }
+
+  const is_user_admin = await isAdmin(API, GROUP_ID, msg.from?.id);
+  if (!is_user_admin) {
+    return send(API, msg.chat.id, "❌ Bukan admin group legacy");
+  }
+
+  if (cmd === "/updatewelcomemedia") {
+    await setWelcomeStep(KV, msg.from.id, "media");
+    return send(API, msg.chat.id, "📸 Silakan kirim *foto / video / gif* untuk welcome media");
+  }
+
+  if (cmd === "/updatewelcometext") {
+    await setWelcomeStep(KV, msg.from.id, "text");
+    return send(
+      API,
+      msg.chat.id,
+`✍️ *Update Welcome Text*
+
+Silakan ketik welcome text.
+
+ℹ️ Placeholder tersedia:
+• {username} → username / mention klik
+• {nama} → nama saja
+
+Contoh:
+Selamat datang {username} di TeMan 🤍`
+    );
+  }
+
+  if (cmd === "/addwelcomelink") {
+    await setWelcomeStep(KV, msg.from.id, "link_title");
+    return send(API, msg.chat.id, "🧷 Silahkan kirim *judul button*");
+  }
+
+  if (cmd === "/delwelcomelink") {
+    const title = String(msg.text || "")
+      .replace(/^\/delwelcomelink(@\w+)?\s+/i, "")
+      .trim();
+
+    if (!title) {
+      return send(API, msg.chat.id, "❌ /delwelcomelink <judul>");
+    }
+
+    let links = safeJSON(await getKV(KV, "welcome_links"), []);
+    const before = links.length;
+
+    links = links.filter(
+      l => String(l.text || "").trim().toLowerCase() !== title.toLowerCase()
+    );
+
+    if (links.length === before) {
+      return send(API, msg.chat.id, "⚠️ Judul tidak ditemukan");
+    }
+
+    await safeKVPut(KV, "welcome_links", JSON.stringify(links));
+    return send(API, msg.chat.id, `🗑️ Welcome button dihapus:\n${title}`);
+  }
+
+  if (cmd === "/listwelcomelink") {
+    const links = safeJSON(await getKV(KV, "welcome_links"), []);
+
+    if (!links.length) {
+      return tg(API, "sendMessage", {
+        chat_id: msg.chat.id,
+        text: "📭 Welcome button masih kosong",
+        disable_web_page_preview: true
+      });
+    }
+
+    return tg(API, "sendMessage", {
+      chat_id: msg.chat.id,
+      text:
+        "Daftar Welcome Button\n\n" +
+        links.map((l, i) => `${i + 1}. ${l.text}\n${l.url}`).join("\n\n"),
+      disable_web_page_preview: true
+    });
+  }
+
+  return send(API, msg.chat.id, "ℹ️ Command itu sekarang dijalankan langsung di group target.");
+}
 
 // ================== WELCOME ==================
 async function welcome(API, KV, user) {
@@ -295,18 +759,17 @@ async function handleModeration(API, msg, KV) {
     const admin = await isAdmin(API, msg.chat.id, msg.from.id);
     if (admin) return;
 
-    // Anti flood untuk hampir semua pesan user
     if (await isFlood(API, msg, KV)) return;
 
     const content = getMessageContent(msg);
     if (!content) return;
 
     const text = content.toLowerCase();
+    const groupId = Number(msg.chat.id);
 
-    // Link moderation
     if (LINK_REGEX.test(text)) {
       LINK_REGEX.lastIndex = 0;
-      const allowed = await linkAllowed(text, KV);
+      const allowed = await linkAllowed(text, KV, groupId);
 
       if (!allowed) {
         await del(API, msg.chat.id, msg.message_id);
@@ -316,8 +779,7 @@ async function handleModeration(API, msg, KV) {
     }
     LINK_REGEX.lastIndex = 0;
 
-    // Banword moderation
-    const banned = String(await getKV(KV, "banned_words"))
+    const banned = String(await getGroupKV(KV, groupId, "banned_words"))
       .split(",")
       .map(x => x.trim().toLowerCase())
       .filter(Boolean);
@@ -340,316 +802,22 @@ function getMessageContent(msg) {
   return "";
 }
 
-// ================== COMMAND ==================
-async function handleCommand(API, msg, KV) {
-  const parts = String(msg.text || "").trim().split(/\s+/);
-  const raw = parts[0] || "";
-  const a = parts[1];
-  const b = parts[2];
-  const cmd = raw.split("@")[0].toLowerCase();
-
-  if (cmd.includes("_")) {
-    return send(
-      API,
-      msg.chat.id,
-      "❌ Command tidak memakai underscore.\nGunakan:\n/linkwhitelist atau /linkblacklist"
-    );
-  }
-
-  if (msg.chat.type !== "private") {
-    return send(API, msg.chat.id, "❌ Command hanya via private bot");
-  }
-
-  if (cmd === "/listcmd") {
-    return send(
-      API,
-      msg.chat.id,
-`🛠️ *Admin Commands*
-
-*Moderation*
-• /banword add [kata]
-• /banword del [kata]
-• /banword list
-
-• /linkwhitelist add [domain]
-• /linkwhitelist del [domain]
-• /linkwhitelist list
-
-• /linkblacklist add [domain]
-• /linkblacklist del [domain]
-• /linkblacklist list
-
-*Anti Spam*
-• /antiflood [limit] [detik]
-• /setmutetime [menit]
-
-*Welcome / Welcome Note*
-• /updatewelcometext
-• /updatewelcomemedia
-• /addwelcomelink
-• /delwelcomelink [judul]
-• /listwelcomelink
-
-*User Control*
-• /unmute [user_id]
-
-*Info*
-• /listcmd
-
-ℹ️ Semua command hanya via private bot
-🔐 Khusus admin & creator`
-    );
-  }
-
-  const is_user_admin = await isAdmin(API, GROUP_ID, msg.from.id);
-  if (!is_user_admin) {
-    return send(API, msg.chat.id, "❌ Bukan admin");
-  }
-
-  if (cmd === "/updatewelcomemedia") {
-    await setWelcomeStep(KV, msg.from.id, "media");
-    return send(API, msg.chat.id, "📸 Silakan kirim *foto / video / gif* untuk welcome media");
-  }
-
-  if (cmd === "/updatewelcometext") {
-    await setWelcomeStep(KV, msg.from.id, "text");
-    return send(
-      API,
-      msg.chat.id,
-`✍️ *Update Welcome Text*
-
-Silakan ketik welcome text.
-
-ℹ️ Placeholder tersedia:
-• {username} → username / mention klik
-• {nama} → nama saja
-
-Contoh:
-Selamat datang {username} di TeMan 🤍`
-    );
-  }
-
-  if (cmd === "/addwelcomelink") {
-    await setWelcomeStep(KV, msg.from.id, "link_title");
-    return send(API, msg.chat.id, "🧷 Silahkan kirim *judul button*");
-  }
-
-  if (cmd === "/delwelcomelink") {
-    const title = String(msg.text || "")
-      .replace(/^\/delwelcomelink(@\w+)?\s+/i, "")
-      .trim();
-
-    if (!title) {
-      return send(API, msg.chat.id, "❌ /delwelcomelink <judul>");
-    }
-
-    let links = safeJSON(await getKV(KV, "welcome_links"), []);
-    const before = links.length;
-
-    links = links.filter(
-      l => String(l.text || "").trim().toLowerCase() !== title.toLowerCase()
-    );
-
-    if (links.length === before) {
-      return send(API, msg.chat.id, "⚠️ Judul tidak ditemukan");
-    }
-
-    await safeKVPut(KV, "welcome_links", JSON.stringify(links));
-    return send(API, msg.chat.id, `🗑️ Welcome button dihapus:\n${title}`);
-  }
-
-  if (cmd === "/listwelcomelink") {
-    const links = safeJSON(await getKV(KV, "welcome_links"), []);
-
-    if (!links.length) {
-      return tg(API, "sendMessage", {
-        chat_id: msg.chat.id,
-        text: "📭 Welcome button masih kosong",
-        disable_web_page_preview: true
-      });
-    }
-
-    return tg(API, "sendMessage", {
-      chat_id: msg.chat.id,
-      text:
-        "Daftar Welcome Button\n\n" +
-        links.map((l, i) => `${i + 1}. ${l.text}\n${l.url}`).join("\n\n"),
-      disable_web_page_preview: true
-    });
-  }
-
-  if (cmd === "/banword") {
-    if (!a) {
-      return send(
-        API,
-        msg.chat.id,
-        "❌ Format:\n/banword add <kata>\n/banword del <kata>\n/banword list"
-      );
-    }
-
-    let list = String(await getKV(KV, "banned_words"))
-      .split(",")
-      .map(x => x.trim().toLowerCase())
-      .filter(Boolean);
-
-    if (a === "list") {
-      if (list.length === 0) {
-        return send(API, msg.chat.id, "📭 Banword masih kosong");
-      }
-
-      return send(
-        API,
-        msg.chat.id,
-        `🚫 *Daftar Banword*\n\n${list.map((w, i) => `${i + 1}. ${escapeBasicMarkdown(w)}`).join("\n")}`
-      );
-    }
-
-    if (!b) {
-      return send(
-        API,
-        msg.chat.id,
-        "❌ Format:\n/banword add <kata>\n/banword del <kata>"
-      );
-    }
-
-    const action = a.toLowerCase();
-    const word = b.toLowerCase();
-
-    if (action === "add") {
-      if (list.includes(word)) {
-        return send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* sudah ada`);
-      }
-      list.push(word);
-      await safeKVPut(KV, "banned_words", list.join(","));
-      return send(API, msg.chat.id, `✅ Kata *${escapeBasicMarkdown(word)}* ditambahkan`);
-    }
-
-    if (action === "del") {
-      if (!list.includes(word)) {
-        return send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* tidak ditemukan`);
-      }
-      list = list.filter(w => w !== word);
-      await safeKVPut(KV, "banned_words", list.join(","));
-      return send(API, msg.chat.id, `🗑️ Kata *${escapeBasicMarkdown(word)}* dihapus`);
-    }
-
-    return send(API, msg.chat.id, "❌ Gunakan add / del / list");
-  }
-
-  if (cmd === "/linkwhitelist") {
-    if (!["add", "del", "list"].includes(a)) {
-      return send(API, msg.chat.id, "❌ /linkwhitelist add|del|list [domain]");
-    }
-
-    let list = safeJSON(await getKV(KV, "link_whitelist"), []);
-
-    if (a === "list") {
-      return send(API, msg.chat.id, renderAdminList("✅ Link Whitelist", list));
-    }
-
-    if (!b) return send(API, msg.chat.id, "❌ Domain kosong");
-
-    const domain = b.toLowerCase();
-
-    if (a === "add") {
-      if (list.includes(domain)) {
-        return send(API, msg.chat.id, "⚠️ Domain sudah ada");
-      }
-      list.push(domain);
-    }
-
-    if (a === "del") {
-      const before = list.length;
-      list = list.filter(d => d !== domain);
-
-      if (list.length === before) {
-        return send(API, msg.chat.id, "⚠️ Domain tidak ditemukan");
-      }
-    }
-
-    await safeKVPut(KV, "link_whitelist", JSON.stringify(list));
-    return send(API, msg.chat.id, `✅ Whitelist diupdate:\n${domain}`);
-  }
-
-  if (cmd === "/linkblacklist") {
-    if (!["add", "del", "list"].includes(a)) {
-      return send(API, msg.chat.id, "❌ /linkblacklist add|del|list [domain]");
-    }
-
-    let list = safeJSON(await getKV(KV, "link_blacklist"), []);
-
-    if (a === "list") {
-      return send(API, msg.chat.id, renderAdminList("⛔ Link Blacklist", list));
-    }
-
-    if (!b) return send(API, msg.chat.id, "❌ Domain kosong");
-
-    const domain = b.toLowerCase();
-
-    if (a === "add") {
-      if (list.includes(domain)) {
-        return send(API, msg.chat.id, "⚠️ Domain sudah ada");
-      }
-      list.push(domain);
-    }
-
-    if (a === "del") {
-      const before = list.length;
-      list = list.filter(d => d !== domain);
-
-      if (list.length === before) {
-        return send(API, msg.chat.id, "⚠️ Domain tidak ditemukan");
-      }
-    }
-
-    await safeKVPut(KV, "link_blacklist", JSON.stringify(list));
-    return send(API, msg.chat.id, `⛔ Blacklist diupdate:\n${domain}`);
-  }
-
-  if (cmd === "/antiflood") {
-    const limit = Number(a);
-    const win = Number(b);
-
-    if (!limit || !win || limit <= 0 || win <= 0) {
-      return send(API, msg.chat.id, "❌ Format: /antiflood <limit> <detik>");
-    }
-
-    await safeKVPut(KV, "flood_limit", String(limit));
-    await safeKVPut(KV, "flood_window", String(win));
-    return send(API, msg.chat.id, `✅ Anti flood diset: ${limit} pesan / ${win} detik`);
-  }
-
-  if (cmd === "/setmutetime") {
-    const n = Number(a);
-    if (!n || n <= 0) return send(API, msg.chat.id, "❌ Angka invalid");
-
-    await safeKVPut(KV, "mute_minutes", String(n));
-    return send(API, msg.chat.id, `⏱️ Mute diset ${n} menit`);
-  }
-
-  if (cmd === "/unmute") {
-    const uid = Number(a);
-    if (!uid) return send(API, msg.chat.id, "❌ /unmute <user_id>");
-
-    await unmute(API, uid);
-    return send(API, msg.chat.id, `🔓 UNMUTE BERHASIL\nUser ID: ${uid}`);
-  }
-}
-
 // ================== FLOOD ==================
 async function isFlood(API, msg, KV) {
-  const id = msg.from?.id;
-  if (!id) return false;
+  const userId = msg.from?.id;
+  const groupId = Number(msg.chat.id);
+  if (!userId || !groupId) return false;
 
+  const key = `${groupId}:${userId}`;
   const now = Date.now();
-  const limit = Number(await getKV(KV, "flood_limit")) || 5;
-  const win = (Number(await getKV(KV, "flood_window")) || 10) * 1000;
+  const limit = Number(await getGroupKV(KV, groupId, "flood_limit")) || 5;
+  const win = (Number(await getGroupKV(KV, groupId, "flood_window")) || 10) * 1000;
 
-  floodMap[id] = (floodMap[id] || []).filter(t => now - t < win);
-  floodMap[id].push(now);
+  floodMap[key] = (floodMap[key] || []).filter(t => now - t < win);
+  floodMap[key].push(now);
 
-  if (floodMap[id].length >= limit) {
-    floodMap[id] = [];
+  if (floodMap[key].length >= limit) {
+    floodMap[key] = [];
     await del(API, msg.chat.id, msg.message_id);
     await punish(API, msg, KV, "Flood / Spam");
     return true;
@@ -660,13 +828,18 @@ async function isFlood(API, msg, KV) {
 
 // ================== PUNISH ==================
 async function punish(API, msg, KV, reason) {
-  const min = getSafeNumber(await getKV(KV, "mute_minutes"), 60);
+  const chatId = Number(msg.chat.id);
+  const min = getSafeNumber(await getGroupKV(KV, chatId, "mute_minutes"), 60);
 
-  await mute(API, GROUP_ID, msg.from.id, min);
+  await mute(API, chatId, msg.from.id, min);
+
+  const title = await getTemanOpsTitle(KV, chatId);
+  const logTarget = await getGroupLogTarget(KV, chatId);
 
   const logText =
 `📋 *LOG PELANGGARAN*
 
+🏠 ${escapeBasicMarkdown(title || String(chatId))}
 👤 ${escapeBasicMarkdown(msg.from.first_name || "-")}
 🆔 ${msg.from.id}
 
@@ -677,9 +850,14 @@ ${escapeBasicMarkdown(reason)}
 Mute ${min} menit
 
 🕊️ *Remisi*
-Hubungi @eltee168 & @osmolagouti`;
+Hubungi admin group`;
 
-  await send(API, GROUP_ID, logText, LOG_THREAD_ID);
+  await send(
+    API,
+    Number(logTarget.chat_id || chatId),
+    logText,
+    logTarget.thread_id
+  );
 }
 
 // ================== MUTE / UNMUTE ==================
@@ -708,9 +886,9 @@ async function mute(API, chatId, userId, min) {
   });
 }
 
-async function unmute(API, userId) {
+async function unmute(API, chatId, userId) {
   await tg(API, "restrictChatMember", {
-    chat_id: GROUP_ID,
+    chat_id: chatId,
     user_id: userId,
     permissions: {
       can_send_messages: true,
@@ -731,9 +909,9 @@ async function unmute(API, userId) {
 }
 
 // ================== LINK ==================
-async function linkAllowed(text, KV) {
-  const wl = safeJSON(await getKV(KV, "link_whitelist"), []);
-  const bl = safeJSON(await getKV(KV, "link_blacklist"), []);
+async function linkAllowed(text, KV, chatId) {
+  const wl = safeJSON(await getGroupKV(KV, chatId, "link_whitelist"), []);
+  const bl = safeJSON(await getGroupKV(KV, chatId, "link_blacklist"), []);
 
   const urls = text.match(LINK_REGEX);
   if (!urls) return true;
@@ -761,6 +939,83 @@ async function linkAllowed(text, KV) {
   }
 
   return true;
+}
+
+// ================== ENABLE / STATUS ==================
+async function shouldRunModeration(KV, chatId) {
+  const n = Number(chatId);
+  if (!n) return false;
+  if (n === Number(GROUP_ID)) return true;
+  return await isTemanOpsEnabled(KV, n);
+}
+
+async function setTemanOpsEnabled(KV, chatId, enabled) {
+  await safeKVPut(KV, `temanops_enabled:${chatId}`, enabled ? "1" : "0");
+  await safeKVPut(KV, `temanops_group_registry:${chatId}`, "1");
+  return true;
+}
+
+async function isTemanOpsEnabled(KV, chatId) {
+  if (Number(chatId) === Number(GROUP_ID)) return true;
+  const val = await safeKVGet(KV, `temanops_enabled:${chatId}`);
+  return val === "1";
+}
+
+async function getTemanOpsTitle(KV, chatId) {
+  return (
+    await safeKVGet(KV, `temanops_title:${chatId}`)
+  ) || (Number(chatId) === Number(GROUP_ID) ? "Legacy Group" : String(chatId));
+}
+
+// ================== LOG TARGET ==================
+async function setGroupLogTarget(KV, sourceChatId, targetChatId, threadId) {
+  return safeKVPut(
+    KV,
+    `temanops_log_target:${sourceChatId}`,
+    JSON.stringify({
+      chat_id: Number(targetChatId),
+      thread_id: threadId ? Number(threadId) : null
+    })
+  );
+}
+
+async function getGroupLogTarget(KV, sourceChatId) {
+  const raw = await safeKVGet(KV, `temanops_log_target:${sourceChatId}`);
+  const data = safeJSON(raw, null);
+
+  if (data?.chat_id) {
+    return {
+      chat_id: Number(data.chat_id),
+      thread_id: data.thread_id ? Number(data.thread_id) : undefined
+    };
+  }
+
+  if (Number(sourceChatId) === Number(GROUP_ID)) {
+    return {
+      chat_id: Number(GROUP_ID),
+      thread_id: Number(LOG_THREAD_ID)
+    };
+  }
+
+  return {
+    chat_id: Number(sourceChatId),
+    thread_id: undefined
+  };
+}
+
+// ================== PER-GROUP KV ==================
+function gkey(chatId, key) {
+  return `group:${chatId}:${key}`;
+}
+
+async function getGroupKV(KV, chatId, key) {
+  try {
+    const val = await KV.get(gkey(chatId, key));
+    return val === null ? (DEFAULTS[key] ?? null) : val;
+  } catch (err) {
+    console.log(`KV GET FAILED [group:${chatId}:${key}]:`, err?.message || err);
+    return DEFAULTS[key] ?? null;
+  }
 }
 
 // ================== TELEGRAM CORE ==================
@@ -792,6 +1047,24 @@ function extractDomain(url) {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {
     return null;
+  }
+}
+
+function normalizeDomainInput(input) {
+  const s = String(input || "").trim().toLowerCase();
+  if (!s) return s;
+
+  try {
+    const withProtocol = /^https?:\/\//i.test(s) ? s : `https://${s}`;
+    const u = new URL(withProtocol);
+    const host = (u.hostname || "").replace(/^www\./, "");
+    const path = (u.pathname && u.pathname !== "/") ? u.pathname : "";
+    return path ? `${host}${path}` : host;
+  } catch {
+    return s
+      .replace(/^https?:\/\//i, "")
+      .replace(/^www\./i, "")
+      .replace(/\/+$/g, "");
   }
 }
 
@@ -857,28 +1130,6 @@ async function del(API, chatId, id) {
   });
 }
 
-async function pin(API, chatId, id) {
-  return tg(API, "pinChatMessage", {
-    chat_id: chatId,
-    message_id: id
-  });
-}
-
-async function unpin(API, chatId, id) {
-  return tg(API, "unpinChatMessage", {
-    chat_id: chatId,
-    message_id: id
-  });
-}
-
-async function react(API, chatId, id, emoji) {
-  return tg(API, "setMessageReaction", {
-    chat_id: chatId,
-    message_id: id,
-    reaction: [{ type: "emoji", emoji }]
-  });
-}
-
 function renderAdminList(title, list) {
   if (!Array.isArray(list) || !list.length) return "📭 Kosong";
   return `${title}\n\`\`\`\n${list.join("\n")}\n\`\`\``;
@@ -900,12 +1151,74 @@ async function clearWelcomeStep(KV, userId) {
 }
 
 async function isAdmin(API, chatId, userId) {
+  if (!userId) return false;
+
   const data = await tg(API, "getChatMember", {
     chat_id: chatId,
     user_id: userId
   });
 
   return !!(data?.result && ["administrator", "creator"].includes(data.result.status));
+}
+
+async function isCreator(API, chatId, userId) {
+  if (!userId) return false;
+
+  const data = await tg(API, "getChatMember", {
+    chat_id: chatId,
+    user_id: userId
+  });
+
+  return data?.result?.status === "creator";
+}
+
+function isAnonymousGroupAdminMessage(msg) {
+  return !!(
+    msg?.chat?.id &&
+    msg?.sender_chat?.id &&
+    String(msg.sender_chat.id) === String(msg.chat.id)
+  );
+}
+
+async function canManageTemanOps(API, msg) {
+  if (await isCreator(API, msg.chat.id, msg.from?.id)) {
+    return true;
+  }
+
+  if (isAnonymousGroupAdminMessage(msg)) {
+    return true;
+  }
+
+  return false;
+}
+
+async function canUseGroupAdminCommands(API, msg, KV) {
+  const chatId = Number(msg.chat.id);
+  const enabled = await isTemanOpsEnabled(KV, chatId);
+
+  if (!enabled) {
+    return {
+      ok: false,
+      message: "❌ TeManOps belum aktif di group ini. Jalankan /aktifkantemanops dulu."
+    };
+  }
+
+  if (isAnonymousGroupAdminMessage(msg)) {
+    return {
+      ok: false,
+      message: "❌ Untuk command setting group, matikan anonymous admin dulu atau kirim sebagai akun admin biasa."
+    };
+  }
+
+  const admin = await isAdmin(API, chatId, msg.from?.id);
+  if (!admin) {
+    return {
+      ok: false,
+      message: "❌ Command ini hanya untuk admin / creator group ini"
+    };
+  }
+
+  return { ok: true };
 }
 
 function safeJSON(raw, def) {
@@ -924,8 +1237,4 @@ function cleanUndefined(obj) {
 
 function escapeBasicMarkdown(text) {
   return String(text || "").replace(/([_*[\]()`])/g, "\\$1");
-}
-
-function escapeMarkdown(text) {
-  return String(text || "").replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }
