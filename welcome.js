@@ -42,40 +42,26 @@ export async function welcome(API, KV, chatId, user) {
 
       const res = await tg(API, method, {
         chat_id: targetChatId,
-        [key]: media.file_id,
-        caption: text,
-        parse_mode: "Markdown",
-        reply_markup: buttons.length
-          ? { inline_keyboard: buttons }
-          : undefined
+        [key]: media.file_id
       });
 
       mediaSent = !!res?.ok;
     }
 
-    // fallback: kalau media belum ada / gagal, tetap kirim welcome message
-    if (!mediaSent) {
-      await tg(API, "sendMessage", {
-        chat_id: targetChatId,
-        text,
-        parse_mode: "Markdown",
-        disable_web_page_preview: true,
-        reply_markup: buttons.length
-          ? { inline_keyboard: buttons }
-          : undefined
-      });
-      return;
-    }
-
-    // tambahan welcome note terpisah
     await tg(API, "sendMessage", {
       chat_id: targetChatId,
       text,
       parse_mode: "Markdown",
-      disable_web_page_preview: true
+      disable_web_page_preview: true,
+      reply_markup: buttons.length
+        ? { inline_keyboard: buttons }
+        : undefined
     });
+
+    return mediaSent;
   } catch (err) {
     console.log("WELCOME FAILED:", err?.message || err);
+    return false;
   }
 }
 
