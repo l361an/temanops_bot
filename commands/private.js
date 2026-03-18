@@ -3,10 +3,8 @@
 import { GROUP_ID } from "../config.js";
 import {
   send,
-  getKV,
   safeJSON,
   safeKVPut,
-  safeKVGet,
   safeKVDelete,
   getGroupKV,
   gkey
@@ -42,6 +40,88 @@ function getWelcomeLinkTmpKey(userId) {
 async function clearWelcomeSetupSession(KV, userId) {
   await safeKVDelete(KV, getWelcomeSetupGroupKey(userId));
   await safeKVDelete(KV, getWelcomeLinkTmpKey(userId));
+}
+
+function buildWelcomeButtons(links) {
+  const buttons = [];
+  let row = [];
+
+  for (const l of Array.isArray(links) ? links : []) {
+    if (!l?.text || !l?.url) continue;
+
+    const btn = {
+      text: String(l.text).slice(0, 64),
+      url: l.url
+    };
+
+    if (btn.text.length > 10) {
+      if (row.length) {
+        buttons.push(row);
+        row = [];
+      }
+      buttons.push([btn]);
+      continue;
+    }
+
+    row.push(btn);
+    if (row.length === 2) {
+      buttons.push(row);
+      row = [];
+    }
+  }
+
+  if (row.length) buttons.push(row);
+  return buttons;
+}
+
+function fillWelcomeTemplate(textTpl, sampleUser) {
+  const username = sampleUser.username
+    ? `@${sampleUser.username}`
+    : escapeBasicMarkdown(sampleUser.first_name || "User");
+
+  const nama = escapeBasicMarkdown(sampleUser.first_name || "TeMan");
+
+  return String(textTpl || "Selamat Bergabung di *TeMan* 🤍")
+    .replace(/{username}/gi, username)
+    .replace(/{nama}/gi, nama);
+}
+
+async function sendPreviewMediaOnly(API, chatId, media) {
+  if (!media?.file_id || !media?.type) return false;
+
+  let method = "sendPhoto";
+  let key = "photo";
+
+  if (media.type === "video") {
+    method = "sendVideo";
+    key = "video";
+  } else if (media.type === "animation") {
+    method = "sendAnimation";
+    key = "animation";
+  }
+
+  const res = await tg(API, method, {
+    chat_id: chatId,
+    [key]: media.file_id
+  });
+
+  return !!res?.ok;
+}
+
+async function sendPreviewTextAndLinks(API, chatId, text, links) {
+  const buttons = buildWelcomeButtons(links);
+
+  const res = await tg(API, "sendMessage", {
+    chat_id: chatId,
+    text,
+    parse_mode: "Markdown",
+    disable_web_page_preview: true,
+    reply_markup: buttons.length
+      ? { inline_keyboard: buttons }
+      : undefined
+  });
+
+  return !!res?.ok;
 }
 
 export async function handlePrivateCommand(API, msg, KV) {
@@ -95,6 +175,7 @@ export async function handlePrivateCommand(API, msg, KV) {
 • /addwelcomelink
 • /delwelcomelink [judul]
 • /listwelcomelink
+• /previewwelcome
 
 *Group Runtime Commands*
 Jalankan langsung di group target:
@@ -360,6 +441,44 @@ Selamat datang {username} di TeMan 🤍`
         links.map((l, i) => `${i + 1}. ${l.text}\n${l.url}`).join("\n\n"),
       disable_web_page_preview: true
     });
+  }
+
+  if (cmd === "/previewwelcome") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const textTpl = await getGroupKV(KV, group.chatId, "welcome_text");
+    const media = safeJSON(await getGroupKV(KV, group.chatId, "welcome_media"), null);
+    const links = safeJSON(await getGroupKV(KV, group.chatId, "welcome_links"), []);
+
+    const previewText = fillWelcomeTemplate(textTpl, {
+      first_name: msg.from?.first_name || "Admin",
+      username: msg.from?.username || ""
+    });
+
+    await send(
+      API,
+      msg.chat.id,
+`👀 *Preview Welcome Terpisah*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+1. Welcome media dikirim terpisah
+2. Welcome text + links dikirim terpisah`
+    );
+
+    const mediaOk = await sendPreviewMediaOnly(API, msg.chat.id, media);
+    if (!mediaOk) {
+      await send(API, msg.chat.id, "⚠️ Welcome media belum ada / gagal dikirim. Lanjut preview text + links.");
+    }
+
+    const noteOk = await sendPreviewTextAndLinks(API, msg.chat.id, previewText, links);
+    if (!noteOk) {
+      await send(API, msg.chat.id, "❌ Preview welcome text / links gagal dikirim.");
+    }
+
+    return true;
   }
 
   if (cmd === "/banword") {
