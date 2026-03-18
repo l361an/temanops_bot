@@ -1,15 +1,39 @@
 // commands/private.js
 
 import { GROUP_ID } from "../config.js";
-import { send, getKV, safeJSON, safeKVPut } from "../kv.js";
+import {
+  send,
+  getKV,
+  safeJSON,
+  safeKVPut,
+  getGroupKV,
+  gkey
+} from "../kv.js";
 import { isAdmin } from "../permissions.js";
-import { setWelcomeStep } from "../userCache.js";
+import {
+  setWelcomeStep,
+  setSelectedGroup,
+  getSelectedGroup,
+  clearSelectedGroup
+} from "../userCache.js";
 import { tg } from "../telegram.js";
+import {
+  listTemanOpsGroups,
+  getTemanOpsTitle,
+  isTemanOpsEnabled,
+  getTemanOpsGroupSummary
+} from "../status.js";
+import {
+  renderAdminList,
+  normalizeDomainInput,
+  escapeBasicMarkdown
+} from "../utils.js";
 
 export async function handlePrivateCommand(API, msg, KV) {
   const parts = String(msg.text || "").trim().split(/\s+/);
   const raw = parts[0] || "";
   const cmd = raw.split("@")[0].toLowerCase();
+  const userId = msg.from?.id;
 
   if (cmd.includes("_")) {
     return send(
@@ -29,41 +53,142 @@ export async function handlePrivateCommand(API, msg, KV) {
       msg.chat.id,
 `🛠️ *TeManOps*
 
-*Group Commands*
+*Private Management*
+• /listgroup
+• /setgroup [group_id]
+• /groupaktif
+• /cleargroup
+
+• /banword add [kata]
+• /banword del [kata]
+• /banword list
+
+• /linkwhitelist add [domain]
+• /linkwhitelist del [domain]
+• /linkwhitelist list
+
+• /linkblacklist add [domain]
+• /linkblacklist del [domain]
+• /linkblacklist list
+
+• /antiflood [limit] [detik]
+• /setmutetime [menit]
+
+*Group Runtime Commands*
 Jalankan langsung di group target:
 • /aktifkantemanops
 • /nonaktifkantemanops
 • /statustemanops
 • /aktifkanlogtemanops
 • /nonaktifkanlogtemanops
-• /banword add|del|list
-• /linkwhitelist add|del|list
-• /linkblacklist add|del|list
-• /antiflood [limit] [detik]
-• /setmutetime [menit]
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 • /listcmdgroup
 
-*Private Commands*
-• /listcmd
+*Welcome Commands*
 • /updatewelcometext
 • /updatewelcomemedia
 • /addwelcomelink
 • /delwelcomelink [judul]
 • /listwelcomelink
 
-ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group target.
-ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
-ℹ️ /nonaktifkanlogtemanops mengembalikan log ke General.
-ℹ️ Untuk sekarang, setting moderation dilakukan langsung dari group.
-ℹ️ Welcome masih mode legacy.`
+ℹ️ Sebelum manage banword / whitelist / blacklist / antiflood / mutetime, pilih group dulu pakai /listgroup lalu /setgroup [group_id]
+ℹ️ Bot akan selalu tampilkan nama group + ID biar tidak ketuker.`
     );
   }
 
-  const is_user_admin = await isAdmin(API, GROUP_ID, msg.from?.id);
+  const is_user_admin = await isAdmin(API, GROUP_ID, userId);
   if (!is_user_admin) {
     return send(API, msg.chat.id, "❌ Bukan admin group legacy");
+  }
+
+  if (cmd === "/listgroup") {
+    const groups = await listTemanOpsGroups(KV);
+
+    if (!groups.length) {
+      return send(API, msg.chat.id, "📭 Belum ada group TeManOps yang terdaftar.");
+    }
+
+    const selectedId = await getSelectedGroup(KV, userId);
+
+    const text =
+`📚 *Daftar Group TeManOps*
+
+${groups.map((g, i) =>
+`${i + 1}. ${escapeBasicMarkdown(g.title || String(g.chat_id))}
+🆔 \`${g.chat_id}\`
+📌 Status: ${g.enabled ? "AKTIF" : "NONAKTIF"}${selectedId === g.chat_id ? "\n🎯 Sedang dipilih" : ""}`
+).join("\n\n")}
+
+Gunakan:
+\`/setgroup -100xxxxxxxxxx\``;
+
+    return send(API, msg.chat.id, text);
+  }
+
+  if (cmd === "/setgroup") {
+    const rawTarget = String(parts[1] || "").trim();
+
+    if (!/^-?\d+$/.test(rawTarget)) {
+      return send(
+        API,
+        msg.chat.id,
+        "❌ Format: /setgroup -100xxxxxxxxxx\nCek ID lewat /listgroup"
+      );
+    }
+
+    const targetChatId = Number(rawTarget);
+    const groups = await listTemanOpsGroups(KV);
+    const target = groups.find(g => Number(g.chat_id) === targetChatId);
+
+    if (!target) {
+      return send(
+        API,
+        msg.chat.id,
+        "❌ Group tidak ditemukan di registry TeManOps.\nCek lagi lewat /listgroup"
+      );
+    }
+
+    await setSelectedGroup(KV, userId, targetChatId);
+
+    return send(
+      API,
+      msg.chat.id,
+`✅ Group target berhasil dipilih
+
+🏠 Group: ${escapeBasicMarkdown(target.title || String(target.chat_id))}
+🆔 ID: \`${target.chat_id}\`
+📌 Status: ${target.enabled ? "AKTIF" : "NONAKTIF"}`
+    );
+  }
+
+  if (cmd === "/groupaktif") {
+    const targetChatId = await getSelectedGroup(KV, userId);
+    if (!targetChatId) {
+      return send(
+        API,
+        msg.chat.id,
+        "❌ Belum ada group yang dipilih.\nGunakan /listgroup lalu /setgroup [group_id]"
+      );
+    }
+
+    const summary = await getTemanOpsGroupSummary(KV, targetChatId);
+
+    return send(
+      API,
+      msg.chat.id,
+`${summary.enabled ? "✅" : "⛔"} *Group Aktif Saat Ini*
+
+🏠 Group: ${escapeBasicMarkdown(summary.title || String(summary.chat_id))}
+🆔 ID: \`${summary.chat_id}\`
+📌 Status: ${summary.enabled ? "AKTIF" : "NONAKTIF"}
+📝 Log target: ${escapeBasicMarkdown(summary.log_label)}`
+    );
+  }
+
+  if (cmd === "/cleargroup") {
+    await clearSelectedGroup(KV, userId);
+    return send(API, msg.chat.id, "🧹 Group target berhasil dihapus. Pilih lagi lewat /listgroup");
   }
 
   if (cmd === "/updatewelcomemedia") {
@@ -138,5 +263,329 @@ Selamat datang {username} di TeMan 🤍`
     });
   }
 
-  return send(API, msg.chat.id, "ℹ️ Command itu sekarang dijalankan langsung di group target.");
+  const targetChatId = await getSelectedGroup(KV, userId);
+
+  const requireSelectedGroup = async () => {
+    if (!targetChatId) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Belum ada group yang dipilih.\nGunakan /listgroup lalu /setgroup [group_id]"
+      );
+      return null;
+    }
+
+    const title = await getTemanOpsTitle(KV, targetChatId);
+    const enabled = await isTemanOpsEnabled(KV, targetChatId);
+
+    return {
+      chatId: targetChatId,
+      title,
+      enabled
+    };
+  };
+
+  if (cmd === "/banword") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const action = String(parts[1] || "").toLowerCase();
+    const word = parts.slice(2).join(" ").trim().toLowerCase();
+
+    let list = String(await getGroupKV(KV, group.chatId, "banned_words"))
+      .split(",")
+      .map(x => x.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (!action) {
+      return send(
+        API,
+        msg.chat.id,
+        "❌ Format:\n/banword add <kata>\n/banword del <kata>\n/banword list"
+      );
+    }
+
+    if (action === "list") {
+      const body = list.length
+        ? list.map((w, i) => `${i + 1}. ${escapeBasicMarkdown(w)}`).join("\n")
+        : "📭 Banword masih kosong";
+
+      return send(
+        API,
+        msg.chat.id,
+`🚫 *Daftar Banword*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+${body}`
+      );
+    }
+
+    if (!word) {
+      return send(
+        API,
+        msg.chat.id,
+        "❌ Format:\n/banword add <kata>\n/banword del <kata>"
+      );
+    }
+
+    if (action === "add") {
+      if (list.includes(word)) {
+        return send(
+          API,
+          msg.chat.id,
+`⚠️ Kata sudah ada
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🚫 Kata: ${escapeBasicMarkdown(word)}`
+        );
+      }
+
+      list.push(word);
+      await safeKVPut(KV, gkey(group.chatId, "banned_words"), list.join(","));
+
+      return send(
+        API,
+        msg.chat.id,
+`✅ Banword ditambahkan
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🚫 Kata: ${escapeBasicMarkdown(word)}`
+      );
+    }
+
+    if (action === "del") {
+      if (!list.includes(word)) {
+        return send(
+          API,
+          msg.chat.id,
+`⚠️ Kata tidak ditemukan
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🚫 Kata: ${escapeBasicMarkdown(word)}`
+        );
+      }
+
+      list = list.filter(w => w !== word);
+      await safeKVPut(KV, gkey(group.chatId, "banned_words"), list.join(","));
+
+      return send(
+        API,
+        msg.chat.id,
+`🗑️ Banword dihapus
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🚫 Kata: ${escapeBasicMarkdown(word)}`
+      );
+    }
+
+    return send(API, msg.chat.id, "❌ Gunakan add / del / list");
+  }
+
+  if (cmd === "/linkwhitelist") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const action = String(parts[1] || "").toLowerCase();
+    const rawDomain = parts.slice(2).join(" ").trim();
+
+    if (!["add", "del", "list"].includes(action)) {
+      return send(API, msg.chat.id, "❌ /linkwhitelist add|del|list [domain]");
+    }
+
+    let list = safeJSON(await getGroupKV(KV, group.chatId, "link_whitelist"), []);
+
+    if (action === "list") {
+      return send(
+        API,
+        msg.chat.id,
+`✅ *Link Whitelist*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+${renderAdminList("Whitelist", list)}`
+      );
+    }
+
+    if (!rawDomain) {
+      return send(API, msg.chat.id, "❌ Domain kosong");
+    }
+
+    const domain = normalizeDomainInput(rawDomain);
+
+    if (action === "add") {
+      if (list.includes(domain)) {
+        return send(
+          API,
+          msg.chat.id,
+`⚠️ Domain sudah ada
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🔗 Domain: ${escapeBasicMarkdown(domain)}`
+        );
+      }
+      list.push(domain);
+    }
+
+    if (action === "del") {
+      const before = list.length;
+      list = list.filter(d => d !== domain);
+
+      if (list.length === before) {
+        return send(
+          API,
+          msg.chat.id,
+`⚠️ Domain tidak ditemukan
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🔗 Domain: ${escapeBasicMarkdown(domain)}`
+        );
+      }
+    }
+
+    await safeKVPut(KV, gkey(group.chatId, "link_whitelist"), JSON.stringify(list));
+    return send(
+      API,
+      msg.chat.id,
+`✅ Link whitelist diupdate
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🔗 Domain: ${escapeBasicMarkdown(domain)}`
+    );
+  }
+
+  if (cmd === "/linkblacklist") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const action = String(parts[1] || "").toLowerCase();
+    const rawDomain = parts.slice(2).join(" ").trim();
+
+    if (!["add", "del", "list"].includes(action)) {
+      return send(API, msg.chat.id, "❌ /linkblacklist add|del|list [domain]");
+    }
+
+    let list = safeJSON(await getGroupKV(KV, group.chatId, "link_blacklist"), []);
+
+    if (action === "list") {
+      return send(
+        API,
+        msg.chat.id,
+`⛔ *Link Blacklist*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+${renderAdminList("Blacklist", list)}`
+      );
+    }
+
+    if (!rawDomain) {
+      return send(API, msg.chat.id, "❌ Domain kosong");
+    }
+
+    const domain = normalizeDomainInput(rawDomain);
+
+    if (action === "add") {
+      if (list.includes(domain)) {
+        return send(
+          API,
+          msg.chat.id,
+`⚠️ Domain sudah ada
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🔗 Domain: ${escapeBasicMarkdown(domain)}`
+        );
+      }
+      list.push(domain);
+    }
+
+    if (action === "del") {
+      const before = list.length;
+      list = list.filter(d => d !== domain);
+
+      if (list.length === before) {
+        return send(
+          API,
+          msg.chat.id,
+`⚠️ Domain tidak ditemukan
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🔗 Domain: ${escapeBasicMarkdown(domain)}`
+        );
+      }
+    }
+
+    await safeKVPut(KV, gkey(group.chatId, "link_blacklist"), JSON.stringify(list));
+    return send(
+      API,
+      msg.chat.id,
+`⛔ Link blacklist diupdate
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🔗 Domain: ${escapeBasicMarkdown(domain)}`
+    );
+  }
+
+  if (cmd === "/antiflood") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const limit = Number(parts[1]);
+    const win = Number(parts[2]);
+
+    if (!limit || !win || limit <= 0 || win <= 0) {
+      return send(API, msg.chat.id, "❌ Format: /antiflood <limit> <detik>");
+    }
+
+    await safeKVPut(KV, gkey(group.chatId, "flood_limit"), String(limit));
+    await safeKVPut(KV, gkey(group.chatId, "flood_window"), String(win));
+
+    return send(
+      API,
+      msg.chat.id,
+`✅ Anti flood diupdate
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+📌 Limit: ${limit} pesan
+⏱️ Window: ${win} detik`
+    );
+  }
+
+  if (cmd === "/setmutetime") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const n = Number(parts[1]);
+    if (!n || n <= 0) {
+      return send(API, msg.chat.id, "❌ Angka invalid");
+    }
+
+    await safeKVPut(KV, gkey(group.chatId, "mute_minutes"), String(n));
+
+    return send(
+      API,
+      msg.chat.id,
+`⏱️ Mute time diupdate
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+⏳ Mute: ${n} menit`
+    );
+  }
+
+  return send(API, msg.chat.id, "ℹ️ Command tidak dikenali. Coba /listcmd");
 }
