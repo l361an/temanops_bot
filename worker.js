@@ -537,7 +537,17 @@ async function handleGroupCommand(API, msg, KV) {
       return true;
     }
 
-    await unmute(API, chatId, uid);
+    const ok = await unmute(API, chatId, uid);
+
+    if (!ok) {
+      await send(
+        API,
+        msg.chat.id,
+        `❌ Unmute gagal untuk user ID ${uid}\nCek apakah bot masih admin dan punya izin restrict members.`
+      );
+      return true;
+    }
+
     await send(API, msg.chat.id, `🔓 UNMUTE BERHASIL\nUser ID: ${uid}`);
     return true;
   }
@@ -864,10 +874,11 @@ Hubungi admin group`;
 async function mute(API, chatId, userId, min) {
   const until = Math.floor(Date.now() / 1000) + (min * 60);
 
-  await tg(API, "restrictChatMember", {
+  const res = await tg(API, "restrictChatMember", {
     chat_id: chatId,
     user_id: userId,
     until_date: until,
+    use_independent_chat_permissions: true,
     permissions: {
       can_send_messages: false,
       can_send_audios: false,
@@ -881,15 +892,19 @@ async function mute(API, chatId, userId, min) {
       can_add_web_page_previews: false,
       can_change_info: false,
       can_invite_users: false,
-      can_pin_messages: false
+      can_pin_messages: false,
+      can_manage_topics: false
     }
   });
+
+  return !!res?.ok;
 }
 
 async function unmute(API, chatId, userId) {
-  await tg(API, "restrictChatMember", {
+  const res = await tg(API, "restrictChatMember", {
     chat_id: chatId,
     user_id: userId,
+    use_independent_chat_permissions: true,
     permissions: {
       can_send_messages: true,
       can_send_audios: true,
@@ -903,9 +918,12 @@ async function unmute(API, chatId, userId) {
       can_add_web_page_previews: true,
       can_change_info: false,
       can_invite_users: true,
-      can_pin_messages: false
+      can_pin_messages: false,
+      can_manage_topics: false
     }
   });
+
+  return !!res?.ok;
 }
 
 // ================== LINK ==================
