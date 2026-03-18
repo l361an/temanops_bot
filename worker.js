@@ -1,8 +1,4 @@
-// workers.js
-
-// ================== LEGACY CONFIG ==================
-// Dipakai sementara untuk grup lama / welcome lama.
-// Tahap berikutnya baru kita lepas dari hardcode ini.
+// ================== CONFIG ==================
 const GROUP_ID = -1001901372111;
 const LOG_THREAD_ID = 82107;
 
@@ -37,7 +33,7 @@ export default {
     console.log("UPDATE:", JSON.stringify(update));
 
     try {
-      // ===== JOIN VIA chat_member (legacy: masih grup lama) =====
+      // ===== JOIN VIA chat_member =====
       if (update.chat_member?.chat?.id === GROUP_ID) {
         const { old_chat_member, new_chat_member } = update.chat_member;
 
@@ -54,6 +50,7 @@ export default {
           (newStatus === "restricted" && new_chat_member?.is_member === true);
 
         const newUser = new_chat_member?.user;
+
         const justJoined = !oldIsMember && newIsMember;
 
         if (justJoined && !newUser?.is_bot) {
@@ -75,9 +72,7 @@ export default {
         return new Response("OK");
       }
 
-      const chatId = Number(msg.chat.id);
-
-      // ===== FALLBACK JOIN VIA new_chat_members (legacy: masih grup lama) =====
+      // ===== FALLBACK JOIN VIA new_chat_members =====
       if (msg?.chat?.id === GROUP_ID && Array.isArray(msg.new_chat_members)) {
         for (const member of msg.new_chat_members) {
           if (!member?.is_bot) {
@@ -85,70 +80,7 @@ export default {
           }
         }
         return new Response("OK");
-      }
-
-      // ===== GROUP COMMAND: AKTIF / NONAKTIF TEMANOPS =====
-      if (
-        msg.chat?.type &&
-        ["group", "supergroup"].includes(msg.chat.type) &&
-        typeof msg.text === "string" &&
-        msg.text.startsWith("/")
-      ) {
-        const cmd = msg.text.trim().split(/\s+/)[0].split("@")[0].toLowerCase();
-
-        if (cmd === "/aktifkantemanops") {
-          const allowed = await canManageTemanOps(API, msg);
-          if (!allowed) {
-            await send(
-              API,
-              msg.chat.id,
-              "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
-            );
-            return new Response("OK");
-          }
-
-          await setTemanOpsEnabled(KV, chatId, true);
-          await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
-
-          // seed log target default ke group itu sendiri
-          await setGroupLogTarget(KV, chatId, chatId, null);
-
-          await send(API, msg.chat.id, "✅ *TeManOps aktif* di group ini");
-          return new Response("OK");
-        }
-
-        if (cmd === "/nonaktifkantemanops") {
-          const allowed = await canManageTemanOps(API, msg);
-          if (!allowed) {
-            await send(
-              API,
-              msg.chat.id,
-              "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
-            );
-            return new Response("OK");
-          }
-
-          await setTemanOpsEnabled(KV, chatId, false);
-          await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
-
-          await send(API, msg.chat.id, "⛔ *TeManOps nonaktif* di group ini");
-          return new Response("OK");
-        }
-
-        if (cmd === "/statustemanops") {
-          const enabled = await isTemanOpsEnabled(KV, chatId);
-          const title = await safeKVGet(KV, `temanops_title:${chatId}`);
-
-          await send(
-            API,
-            msg.chat.id,
-            enabled
-              ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title || msg.chat.title || String(chatId))}`
-              : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title || msg.chat.title || String(chatId))}`
-          );
-          return new Response("OK");
-        }
-      }
+      }      
 
       // ===== PRIVATE COMMAND =====
       if (msg.chat.type === "private" && msg.text?.startsWith("/")) {
@@ -267,12 +199,7 @@ export default {
       }
 
       // ===== GROUP MODERATION =====
-      if (
-        ["group", "supergroup"].includes(msg.chat.type) &&
-        msg.from &&
-        !msg.from.is_bot &&
-        await shouldRunModeration(KV, msg.chat.id)
-      ) {
+      if (msg.chat.id === GROUP_ID && msg.from && !msg.from.is_bot) {
         await handleModeration(API, msg, KV);
       }
 
@@ -285,7 +212,6 @@ export default {
 };
 
 // ================== WELCOME ==================
-// legacy: masih kirim ke GROUP_ID hardcode
 async function welcome(API, KV, user) {
   try {
     const username = user.username
@@ -369,17 +295,18 @@ async function handleModeration(API, msg, KV) {
     const admin = await isAdmin(API, msg.chat.id, msg.from.id);
     if (admin) return;
 
+    // Anti flood untuk hampir semua pesan user
     if (await isFlood(API, msg, KV)) return;
 
     const content = getMessageContent(msg);
     if (!content) return;
 
     const text = content.toLowerCase();
-    const groupId = Number(msg.chat.id);
 
+    // Link moderation
     if (LINK_REGEX.test(text)) {
       LINK_REGEX.lastIndex = 0;
-      const allowed = await linkAllowed(text, KV, groupId);
+      const allowed = await linkAllowed(text, KV);
 
       if (!allowed) {
         await del(API, msg.chat.id, msg.message_id);
@@ -389,7 +316,8 @@ async function handleModeration(API, msg, KV) {
     }
     LINK_REGEX.lastIndex = 0;
 
-    const banned = String(await getGroupKV(KV, groupId, "banned_words"))
+    // Banword moderation
+    const banned = String(await getKV(KV, "banned_words"))
       .split(",")
       .map(x => x.trim().toLowerCase())
       .filter(Boolean);
@@ -419,7 +347,6 @@ async function handleCommand(API, msg, KV) {
   const a = parts[1];
   const b = parts[2];
   const cmd = raw.split("@")[0].toLowerCase();
-  const userId = msg.from?.id;
 
   if (cmd.includes("_")) {
     return send(
@@ -438,11 +365,6 @@ async function handleCommand(API, msg, KV) {
       API,
       msg.chat.id,
 `🛠️ *Admin Commands*
-
-*Pemilihan Group*
-• /groups
-• /setgroup [chat_id]
-• /where
 
 *Moderation*
 • /banword add [kata]
@@ -475,93 +397,13 @@ async function handleCommand(API, msg, KV) {
 • /listcmd
 
 ℹ️ Semua command hanya via private bot
-🔐 Khusus admin / creator di group yang dipilih`
+🔐 Khusus admin & creator`
     );
   }
 
-  // ===== pilih group aktif =====
-  if (cmd === "/groups") {
-    const groups = await getEnabledGroupsForUser(API, KV, userId);
-
-    if (!groups.length) {
-      return send(
-        API,
-        msg.chat.id,
-        "📭 Belum ada group aktif yang bisa lo kelola.\nAktifkan dulu di group dengan /aktifkantemanops"
-      );
-    }
-
-    return send(
-      API,
-      msg.chat.id,
-      [
-        "📋 *Group aktif yang bisa lo kelola*",
-        "",
-        ...groups.map(g => `• ${escapeBasicMarkdown(g.title)} → \`${g.chatId}\``),
-        "",
-        "Pilih target: /setgroup <chat_id>"
-      ].join("\n")
-    );
-  }
-
-  if (cmd === "/setgroup") {
-    if (!a) {
-      return send(API, msg.chat.id, "❌ Format: /setgroup <chat_id>");
-    }
-
-    const chatId = Number(a);
-    if (!chatId) {
-      return send(API, msg.chat.id, "❌ chat_id tidak valid");
-    }
-
-    const enabled = await isTemanOpsEnabled(KV, chatId);
-    if (!enabled) {
-      return send(API, msg.chat.id, "❌ Group itu belum aktif /aktifkantemanops");
-    }
-
-    const ok = await isAdmin(API, chatId, userId);
-    if (!ok) {
-      return send(API, msg.chat.id, "❌ Lo bukan admin di group itu");
-    }
-
-    await setSelectedGroup(KV, userId, chatId);
-    const title = await getTemanOpsTitle(KV, chatId);
-
-    return send(
-      API,
-      msg.chat.id,
-      `✅ Target group aktif:\n🏠 ${escapeBasicMarkdown(title)}\n🆔 \`${chatId}\``
-    );
-  }
-
-  if (cmd === "/where") {
-    const selected = await getSelectedGroup(KV, userId);
-    if (!selected) {
-      return send(API, msg.chat.id, "📭 Belum pilih group. Pakai /groups lalu /setgroup <chat_id>");
-    }
-
-    const title = await getTemanOpsTitle(KV, selected);
-    return send(
-      API,
-      msg.chat.id,
-      `🎯 Target sekarang:\n🏠 ${escapeBasicMarkdown(title)}\n🆔 \`${selected}\``
-    );
-  }
-
-  // semua command di bawah wajib punya selected group
-  const selectedGroupId = await getSelectedGroup(KV, userId);
-  if (!selectedGroupId) {
-    return send(API, msg.chat.id, "❌ Pilih group dulu. Gunakan /groups lalu /setgroup <chat_id>");
-  }
-
-  const enabled = await isTemanOpsEnabled(KV, selectedGroupId);
-  if (!enabled) {
-    return send(API, msg.chat.id, "❌ Group yang dipilih sudah nonaktif");
-  }
-
-  const isUserAdmin = await isAdmin(API, selectedGroupId, userId);
-  if (!isUserAdmin) {
-    return send(API, msg.chat.id, `❌ Lo bukan admin di group \`${selectedGroupId}\``);
+  const is_user_admin = await isAdmin(API, GROUP_ID, msg.from.id);
+  if (!is_user_admin) {
+    return send(API, msg.chat.id, "❌ Bukan admin");
   }
 
   if (cmd === "/updatewelcomemedia") {
@@ -601,7 +443,7 @@ Selamat datang {username} di TeMan 🤍`
       return send(API, msg.chat.id, "❌ /delwelcomelink <judul>");
     }
 
-    let links = safeJSON(await getGroupKV(KV, selectedGroupId, "welcome_links"), []);
+    let links = safeJSON(await getKV(KV, "welcome_links"), []);
     const before = links.length;
 
     links = links.filter(
@@ -612,12 +454,12 @@ Selamat datang {username} di TeMan 🤍`
       return send(API, msg.chat.id, "⚠️ Judul tidak ditemukan");
     }
 
-    await safeKVPut(KV, gkey(selectedGroupId, "welcome_links"), JSON.stringify(links));
+    await safeKVPut(KV, "welcome_links", JSON.stringify(links));
     return send(API, msg.chat.id, `🗑️ Welcome button dihapus:\n${title}`);
   }
 
   if (cmd === "/listwelcomelink") {
-    const links = safeJSON(await getGroupKV(KV, selectedGroupId, "welcome_links"), []);
+    const links = safeJSON(await getKV(KV, "welcome_links"), []);
 
     if (!links.length) {
       return tg(API, "sendMessage", {
@@ -645,7 +487,7 @@ Selamat datang {username} di TeMan 🤍`
       );
     }
 
-    let list = String(await getGroupKV(KV, selectedGroupId, "banned_words"))
+    let list = String(await getKV(KV, "banned_words"))
       .split(",")
       .map(x => x.trim().toLowerCase())
       .filter(Boolean);
@@ -678,7 +520,7 @@ Selamat datang {username} di TeMan 🤍`
         return send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* sudah ada`);
       }
       list.push(word);
-      await safeKVPut(KV, gkey(selectedGroupId, "banned_words"), list.join(","));
+      await safeKVPut(KV, "banned_words", list.join(","));
       return send(API, msg.chat.id, `✅ Kata *${escapeBasicMarkdown(word)}* ditambahkan`);
     }
 
@@ -687,7 +529,7 @@ Selamat datang {username} di TeMan 🤍`
         return send(API, msg.chat.id, `⚠️ Kata *${escapeBasicMarkdown(word)}* tidak ditemukan`);
       }
       list = list.filter(w => w !== word);
-      await safeKVPut(KV, gkey(selectedGroupId, "banned_words"), list.join(","));
+      await safeKVPut(KV, "banned_words", list.join(","));
       return send(API, msg.chat.id, `🗑️ Kata *${escapeBasicMarkdown(word)}* dihapus`);
     }
 
@@ -699,7 +541,7 @@ Selamat datang {username} di TeMan 🤍`
       return send(API, msg.chat.id, "❌ /linkwhitelist add|del|list [domain]");
     }
 
-    let list = safeJSON(await getGroupKV(KV, selectedGroupId, "link_whitelist"), []);
+    let list = safeJSON(await getKV(KV, "link_whitelist"), []);
 
     if (a === "list") {
       return send(API, msg.chat.id, renderAdminList("✅ Link Whitelist", list));
@@ -725,7 +567,7 @@ Selamat datang {username} di TeMan 🤍`
       }
     }
 
-    await safeKVPut(KV, gkey(selectedGroupId, "link_whitelist"), JSON.stringify(list));
+    await safeKVPut(KV, "link_whitelist", JSON.stringify(list));
     return send(API, msg.chat.id, `✅ Whitelist diupdate:\n${domain}`);
   }
 
@@ -734,7 +576,7 @@ Selamat datang {username} di TeMan 🤍`
       return send(API, msg.chat.id, "❌ /linkblacklist add|del|list [domain]");
     }
 
-    let list = safeJSON(await getGroupKV(KV, selectedGroupId, "link_blacklist"), []);
+    let list = safeJSON(await getKV(KV, "link_blacklist"), []);
 
     if (a === "list") {
       return send(API, msg.chat.id, renderAdminList("⛔ Link Blacklist", list));
@@ -760,7 +602,7 @@ Selamat datang {username} di TeMan 🤍`
       }
     }
 
-    await safeKVPut(KV, gkey(selectedGroupId, "link_blacklist"), JSON.stringify(list));
+    await safeKVPut(KV, "link_blacklist", JSON.stringify(list));
     return send(API, msg.chat.id, `⛔ Blacklist diupdate:\n${domain}`);
   }
 
@@ -772,8 +614,8 @@ Selamat datang {username} di TeMan 🤍`
       return send(API, msg.chat.id, "❌ Format: /antiflood <limit> <detik>");
     }
 
-    await safeKVPut(KV, gkey(selectedGroupId, "flood_limit"), String(limit));
-    await safeKVPut(KV, gkey(selectedGroupId, "flood_window"), String(win));
+    await safeKVPut(KV, "flood_limit", String(limit));
+    await safeKVPut(KV, "flood_window", String(win));
     return send(API, msg.chat.id, `✅ Anti flood diset: ${limit} pesan / ${win} detik`);
   }
 
@@ -781,7 +623,7 @@ Selamat datang {username} di TeMan 🤍`
     const n = Number(a);
     if (!n || n <= 0) return send(API, msg.chat.id, "❌ Angka invalid");
 
-    await safeKVPut(KV, gkey(selectedGroupId, "mute_minutes"), String(n));
+    await safeKVPut(KV, "mute_minutes", String(n));
     return send(API, msg.chat.id, `⏱️ Mute diset ${n} menit`);
   }
 
@@ -789,27 +631,25 @@ Selamat datang {username} di TeMan 🤍`
     const uid = Number(a);
     if (!uid) return send(API, msg.chat.id, "❌ /unmute <user_id>");
 
-    await unmute(API, selectedGroupId, uid);
+    await unmute(API, uid);
     return send(API, msg.chat.id, `🔓 UNMUTE BERHASIL\nUser ID: ${uid}`);
   }
 }
 
 // ================== FLOOD ==================
 async function isFlood(API, msg, KV) {
-  const userId = msg.from?.id;
-  const groupId = Number(msg.chat.id);
-  if (!userId || !groupId) return false;
+  const id = msg.from?.id;
+  if (!id) return false;
 
-  const key = `${groupId}:${userId}`;
   const now = Date.now();
-  const limit = Number(await getGroupKV(KV, groupId, "flood_limit")) || 5;
-  const win = (Number(await getGroupKV(KV, groupId, "flood_window")) || 10) * 1000;
+  const limit = Number(await getKV(KV, "flood_limit")) || 5;
+  const win = (Number(await getKV(KV, "flood_window")) || 10) * 1000;
 
-  floodMap[key] = (floodMap[key] || []).filter(t => now - t < win);
-  floodMap[key].push(now);
+  floodMap[id] = (floodMap[id] || []).filter(t => now - t < win);
+  floodMap[id].push(now);
 
-  if (floodMap[key].length >= limit) {
-    floodMap[key] = [];
+  if (floodMap[id].length >= limit) {
+    floodMap[id] = [];
     await del(API, msg.chat.id, msg.message_id);
     await punish(API, msg, KV, "Flood / Spam");
     return true;
@@ -820,18 +660,13 @@ async function isFlood(API, msg, KV) {
 
 // ================== PUNISH ==================
 async function punish(API, msg, KV, reason) {
-  const chatId = Number(msg.chat.id);
-  const min = getSafeNumber(await getGroupKV(KV, chatId, "mute_minutes"), 60);
+  const min = getSafeNumber(await getKV(KV, "mute_minutes"), 60);
 
-  await mute(API, chatId, msg.from.id, min);
-
-  const title = await getTemanOpsTitle(KV, chatId);
-  const logTarget = await getGroupLogTarget(KV, chatId);
+  await mute(API, GROUP_ID, msg.from.id, min);
 
   const logText =
 `📋 *LOG PELANGGARAN*
 
-🏠 ${escapeBasicMarkdown(title || String(chatId))}
 👤 ${escapeBasicMarkdown(msg.from.first_name || "-")}
 🆔 ${msg.from.id}
 
@@ -842,14 +677,9 @@ ${escapeBasicMarkdown(reason)}
 Mute ${min} menit
 
 🕊️ *Remisi*
-Hubungi admin group`;
+Hubungi @eltee168 & @osmolagouti`;
 
-  await send(
-    API,
-    Number(logTarget.chat_id || chatId),
-    logText,
-    logTarget.thread_id
-  );
+  await send(API, GROUP_ID, logText, LOG_THREAD_ID);
 }
 
 // ================== MUTE / UNMUTE ==================
@@ -878,9 +708,9 @@ async function mute(API, chatId, userId, min) {
   });
 }
 
-async function unmute(API, chatId, userId) {
+async function unmute(API, userId) {
   await tg(API, "restrictChatMember", {
-    chat_id: chatId,
+    chat_id: GROUP_ID,
     user_id: userId,
     permissions: {
       can_send_messages: true,
@@ -901,9 +731,9 @@ async function unmute(API, chatId, userId) {
 }
 
 // ================== LINK ==================
-async function linkAllowed(text, KV, chatId) {
-  const wl = safeJSON(await getGroupKV(KV, chatId, "link_whitelist"), []);
-  const bl = safeJSON(await getGroupKV(KV, chatId, "link_blacklist"), []);
+async function linkAllowed(text, KV) {
+  const wl = safeJSON(await getKV(KV, "link_whitelist"), []);
+  const bl = safeJSON(await getKV(KV, "link_blacklist"), []);
 
   const urls = text.match(LINK_REGEX);
   if (!urls) return true;
@@ -953,141 +783,6 @@ async function tg(API, method, payload) {
   } catch (err) {
     console.log(`TG ${method} ERROR:`, err?.message || err);
     return null;
-  }
-}
-
-// ================== GROUP ENABLE / SELECT ==================
-async function shouldRunModeration(KV, chatId) {
-  const n = Number(chatId);
-  if (!n) return false;
-
-  // backward compatibility: grup lama tetap jalan walau belum diaktifkan manual
-  if (n === GROUP_ID) return true;
-
-  return await isTemanOpsEnabled(KV, n);
-}
-
-async function setTemanOpsEnabled(KV, chatId, enabled) {
-  await safeKVPut(KV, `temanops_enabled:${chatId}`, enabled ? "1" : "0");
-  await safeKVPut(KV, `temanops_group_registry:${chatId}`, "1");
-  return true;
-}
-
-async function isTemanOpsEnabled(KV, chatId) {
-  const val = await safeKVGet(KV, `temanops_enabled:${chatId}`);
-  return val === "1";
-}
-
-async function setSelectedGroup(KV, userId, chatId) {
-  return safeKVPut(KV, `temanops_selected_group:${userId}`, String(chatId));
-}
-
-async function getSelectedGroup(KV, userId) {
-  const val = await safeKVGet(KV, `temanops_selected_group:${userId}`);
-  return val ? Number(val) : null;
-}
-
-async function getEnabledGroupsForUser(API, KV, userId) {
-  const all = await getAllRegisteredGroups(KV);
-  const results = [];
-
-  for (const chatId of all) {
-    if (!(await isTemanOpsEnabled(KV, chatId))) continue;
-    if (!(await isAdmin(API, chatId, userId))) continue;
-
-    results.push({
-      chatId,
-      title: await getTemanOpsTitle(KV, chatId)
-    });
-  }
-
-  return results;
-}
-
-async function getAllRegisteredGroups(KV) {
-  const ids = new Set();
-
-  try {
-    let cursor = undefined;
-
-    do {
-      const res = await KV.list({
-        prefix: "temanops_group_registry:",
-        cursor
-      });
-
-      for (const key of res.keys || []) {
-        const m = String(key.name || "").match(/^temanops_group_registry:(-?\d+)$/);
-        if (m) ids.add(Number(m[1]));
-      }
-
-      cursor = res.list_complete ? undefined : res.cursor;
-    } while (cursor);
-  } catch (err) {
-    console.log("KV LIST GROUP REGISTRY FAILED:", err?.message || err);
-  }
-
-  // seed legacy group lama supaya tetap muncul kalau user admin di sana
-  ids.add(Number(GROUP_ID));
-
-  return [...ids];
-}
-
-async function getTemanOpsTitle(KV, chatId) {
-  const title = await safeKVGet(KV, `temanops_title:${chatId}`);
-  return title || String(chatId);
-}
-
-// ================== GROUP LOG TARGET ==================
-async function setGroupLogTarget(KV, sourceChatId, targetChatId, threadId) {
-  return safeKVPut(
-    KV,
-    `temanops_log_target:${sourceChatId}`,
-    JSON.stringify({
-      chat_id: Number(targetChatId),
-      thread_id: threadId ? Number(threadId) : null
-    })
-  );
-}
-
-async function getGroupLogTarget(KV, sourceChatId) {
-  const raw = await safeKVGet(KV, `temanops_log_target:${sourceChatId}`);
-  const data = safeJSON(raw, null);
-
-  if (data?.chat_id) {
-    return {
-      chat_id: Number(data.chat_id),
-      thread_id: data.thread_id ? Number(data.thread_id) : undefined
-    };
-  }
-
-  // legacy fallback untuk grup lama
-  if (Number(sourceChatId) === Number(GROUP_ID)) {
-    return {
-      chat_id: Number(GROUP_ID),
-      thread_id: Number(LOG_THREAD_ID)
-    };
-  }
-
-  // default: log ke grup asal, tanpa topic
-  return {
-    chat_id: Number(sourceChatId),
-    thread_id: undefined
-  };
-}
-
-// ================== PER-GROUP KV ==================
-function gkey(chatId, key) {
-  return `group:${chatId}:${key}`;
-}
-
-async function getGroupKV(KV, chatId, key) {
-  try {
-    const val = await KV.get(gkey(chatId, key));
-    return val === null ? (DEFAULTS[key] ?? null) : val;
-  } catch (err) {
-    console.log(`KV GET FAILED [group:${chatId}:${key}]:`, err?.message || err);
-    return DEFAULTS[key] ?? null;
   }
 }
 
@@ -1205,45 +900,12 @@ async function clearWelcomeStep(KV, userId) {
 }
 
 async function isAdmin(API, chatId, userId) {
-  if (!userId) return false;
-
   const data = await tg(API, "getChatMember", {
     chat_id: chatId,
     user_id: userId
   });
 
   return !!(data?.result && ["administrator", "creator"].includes(data.result.status));
-}
-
-async function isCreator(API, chatId, userId) {
-  if (!userId) return false;
-
-  const data = await tg(API, "getChatMember", {
-    chat_id: chatId,
-    user_id: userId
-  });
-
-  return data?.result?.status === "creator";
-}
-
-function isAnonymousGroupAdminMessage(msg) {
-  return !!(
-    msg?.chat?.id &&
-    msg?.sender_chat?.id &&
-    String(msg.sender_chat.id) === String(msg.chat.id)
-  );
-}
-
-async function canManageTemanOps(API, msg) {
-  if (await isCreator(API, msg.chat.id, msg.from?.id)) {
-    return true;
-  }
-
-  if (isAnonymousGroupAdminMessage(msg)) {
-    return true;
-  }
-
-  return false;
 }
 
 function safeJSON(raw, def) {
