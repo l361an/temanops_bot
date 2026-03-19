@@ -15,6 +15,11 @@ import {
 } from "../status.js";
 import { unmute } from "../moderation.js";
 import { getCachedUserIdByUsername } from "../userCache.js";
+import {
+  setUsernameWatchTarget,
+  getUsernameWatchTarget,
+  clearUsernameWatchTarget
+} from "../surveillance.js";
 import { escapeBasicMarkdown } from "../utils.js";
 
 export async function handleGroupCommand(API, msg, KV) {
@@ -30,6 +35,9 @@ export async function handleGroupCommand(API, msg, KV) {
     "/statustemanops",
     "/aktifkanlogtemanops",
     "/nonaktifkanlogtemanops",
+    "/aktifkanpengawasan",
+    "/nonaktifkanpengawasan",
+    "/statuspengawasan",
     "/unmute",
     "/listcmdgroup"
   ]);
@@ -170,6 +178,58 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
+  if (cmd === "/aktifkanpengawasan") {
+    const threadId = msg.message_thread_id ? Number(msg.message_thread_id) : null;
+
+    await setUsernameWatchTarget(KV, chatId, chatId, threadId);
+
+    if (threadId) {
+      await send(
+        API,
+        msg.chat.id,
+        "✅ Pengawasan user tanpa username sekarang aktif di topic ini.\nKartu pengawasan akan otomatis dihapus saat user sudah pasang username.",
+        threadId
+      );
+    } else {
+      await send(
+        API,
+        msg.chat.id,
+        "✅ Pengawasan user tanpa username sekarang aktif di General.\nKalau mau rapi, jalankan command ini di topic khusus seperti *Dalam Pengawasan TeMan*."
+      );
+    }
+    return true;
+  }
+
+  if (cmd === "/nonaktifkanpengawasan") {
+    await clearUsernameWatchTarget(KV, chatId);
+    await send(
+      API,
+      msg.chat.id,
+      "✅ Pengawasan user tanpa username dinonaktifkan untuk group ini."
+    );
+    return true;
+  }
+
+  if (cmd === "/statuspengawasan") {
+    const title = await getTemanOpsTitle(KV, chatId);
+    const target = await getUsernameWatchTarget(KV, chatId);
+
+    let statusText = "NONAKTIF";
+    let targetText = "-";
+
+    if (target?.chat_id) {
+      statusText = "AKTIF";
+      targetText = target.thread_id ? `Topic ID ${target.thread_id}` : "General";
+    }
+
+    await send(
+      API,
+      msg.chat.id,
+      `👁️ *Status Pengawasan Username*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Status: ${statusText}\n📝 Target: ${escapeBasicMarkdown(targetText)}`
+    );
+    return true;
+  }
+
   if (cmd === "/listcmdgroup") {
     await send(
       API,
@@ -182,6 +242,11 @@ export async function handleGroupCommand(API, msg, KV) {
 • /statustemanops
 • /aktifkanlogtemanops
 • /nonaktifkanlogtemanops
+
+*Pengawasan Username*
+• /aktifkanpengawasan
+• /nonaktifkanpengawasan
+• /statuspengawasan
 
 *User Control*
 • /unmute [@username|user_id]
@@ -205,7 +270,7 @@ export async function handleGroupCommand(API, msg, KV) {
 
 ℹ️ Untuk config moderation dan welcome, jalankan di private bot agar tidak terlihat member.
 ℹ️ /aktifkanlogtemanops dijalankan di topic target log.
-ℹ️ /nonaktifkanlogtemanops mengembalikan log ke General.
+ℹ️ /aktifkanpengawasan dijalankan di topic target pengawasan username.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
     return true;
