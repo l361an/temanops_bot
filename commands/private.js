@@ -19,7 +19,6 @@ import {
 import { tg } from "../telegram.js";
 import {
   listTemanOpsGroups,
-  getTemanOpsTitle,
   isTemanOpsEnabled,
   getTemanOpsGroupSummary
 } from "../status.js";
@@ -166,6 +165,10 @@ export async function handlePrivateCommand(API, msg, KV) {
 • /linkblacklist del [domain]
 • /linkblacklist list
 
+• /linkmode hybrid
+• /linkmode whitelistonly
+• /linkmode status
+
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
 
@@ -184,6 +187,9 @@ Jalankan langsung di group target:
 • /statustemanops
 • /aktifkanlogtemanops
 • /nonaktifkanlogtemanops
+• /aktifkanpengawasan
+• /nonaktifkanpengawasan
+• /statuspengawasan
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 • /listcmdgroup
@@ -270,6 +276,7 @@ Gunakan:
     }
 
     const summary = await getTemanOpsGroupSummary(KV, targetChatId);
+    const linkMode = String(await getGroupKV(KV, targetChatId, "link_mode") || "hybrid").toLowerCase();
 
     return send(
       API,
@@ -279,7 +286,8 @@ Gunakan:
 🏠 Group: ${escapeBasicMarkdown(summary.title || String(summary.chat_id))}
 🆔 ID: \`${summary.chat_id}\`
 📌 Status: ${summary.enabled ? "AKTIF" : "NONAKTIF"}
-📝 Log target: ${escapeBasicMarkdown(summary.log_label)}`
+📝 Log target: ${escapeBasicMarkdown(summary.log_label)}
+🔗 Link mode: ${escapeBasicMarkdown(linkMode)}`
     );
   }
 
@@ -301,13 +309,12 @@ Gunakan:
       return null;
     }
 
-    const title = await getTemanOpsTitle(KV, targetChatId);
-    const enabled = await isTemanOpsEnabled(KV, targetChatId);
+    const summary = await getTemanOpsGroupSummary(KV, targetChatId);
 
     return {
       chatId: targetChatId,
-      title: title || String(targetChatId),
-      enabled
+      title: summary.title || String(targetChatId),
+      enabled: summary.enabled
     };
   };
 
@@ -732,6 +739,57 @@ ${renderAdminList("Blacklist", list)}`
 🏠 Group: ${escapeBasicMarkdown(group.title)}
 🆔 ID: \`${group.chatId}\`
 🔗 Domain: ${escapeBasicMarkdown(domain)}`
+    );
+  }
+
+  if (cmd === "/linkmode") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const mode = String(parts[1] || "").trim().toLowerCase();
+    const currentMode = String(await getGroupKV(KV, group.chatId, "link_mode") || "hybrid").toLowerCase();
+
+    if (!mode || mode === "status") {
+      return send(
+        API,
+        msg.chat.id,
+`🔗 *Status Link Mode*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+📌 Mode: ${escapeBasicMarkdown(currentMode)}
+
+Mode tersedia:
+• hybrid
+• whitelistonly`
+      );
+    }
+
+    if (!["hybrid", "whitelistonly"].includes(mode)) {
+      return send(
+        API,
+        msg.chat.id,
+        "❌ Gunakan: /linkmode hybrid\n/linkmode whitelistonly\n/linkmode status"
+      );
+    }
+
+    await safeKVPut(KV, gkey(group.chatId, "link_mode"), mode);
+
+    const note =
+      mode === "whitelistonly"
+        ? "Semua link akan diblok kecuali yang ada di whitelist."
+        : "Link whitelist tetap lolos, link blacklist tetap diblok, sisanya tetap boleh.";
+
+    return send(
+      API,
+      msg.chat.id,
+`✅ Link mode diupdate
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+📌 Mode: ${escapeBasicMarkdown(mode)}
+
+ℹ️ ${note}`
     );
   }
 
