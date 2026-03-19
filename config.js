@@ -13,6 +13,7 @@ export const DEFAULTS = {
   banned_words: "",
   link_whitelist: "[]",
   link_blacklist: "[]",
+  link_mode: "hybrid",
   welcome_text: "Selamat Bergabung di *TeMan* 🤍",
   welcome_media: "",
   welcome_links: "[]"
