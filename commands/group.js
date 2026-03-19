@@ -46,6 +46,7 @@ export async function handleGroupCommand(API, msg, KV) {
     "/banword",
     "/linkwhitelist",
     "/linkblacklist",
+    "/linkmode",
     "/antiflood",
     "/setmutetime",
     "/updatewelcometext",
@@ -260,6 +261,7 @@ export async function handleGroupCommand(API, msg, KV) {
 • /banword add|del|list
 • /linkwhitelist add|del|list
 • /linkblacklist add|del|list
+• /linkmode hybrid|whitelistonly|status
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
 • /updatewelcometext
