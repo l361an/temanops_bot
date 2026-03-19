@@ -1,6 +1,5 @@
 // worker.js
 
-import { GROUP_ID } from "./config.js";
 import { handleGroupCommand } from "./commands/group.js";
 import { handlePrivateCommand } from "./commands/private.js";
 import { welcome } from "./welcome.js";
@@ -22,6 +21,7 @@ import {
 } from "./kv.js";
 import { shouldRunModeration, getTemanOpsTitle } from "./status.js";
 import { escapeBasicMarkdown } from "./utils.js";
+import { auditUsernameSurveillance } from "./surveillance.js";
 
 function getWelcomeSetupGroupKey(userId) {
   return `welcome_setup_group:${userId}`;
@@ -77,6 +77,7 @@ export default {
 
         if (newUser?.id) {
           await cacheUserIdentity(KV, memberChatId, newUser);
+          await auditUsernameSurveillance(API, KV, memberChatId, newUser);
         }
 
         if (
@@ -102,19 +103,29 @@ export default {
       }
 
       const chatId = Number(msg.chat.id);
+      const isGroupChat = ["group", "supergroup"].includes(msg.chat.type);
 
       if (msg.from?.id && !msg.from?.is_bot) {
         await cacheUserIdentity(KV, chatId, msg.from);
+        if (isGroupChat) {
+          await auditUsernameSurveillance(API, KV, chatId, msg.from);
+        }
       }
 
       if (msg.reply_to_message?.from?.id && !msg.reply_to_message?.from?.is_bot) {
         await cacheUserIdentity(KV, chatId, msg.reply_to_message.from);
+        if (isGroupChat) {
+          await auditUsernameSurveillance(API, KV, chatId, msg.reply_to_message.from);
+        }
       }
 
       if (Array.isArray(msg.new_chat_members)) {
         for (const member of msg.new_chat_members) {
           if (member?.id && !member?.is_bot) {
             await cacheUserIdentity(KV, chatId, member);
+            if (isGroupChat) {
+              await auditUsernameSurveillance(API, KV, chatId, member);
+            }
           }
         }
       }
