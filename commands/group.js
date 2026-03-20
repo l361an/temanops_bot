@@ -1,5 +1,3 @@
-// commands/group.js
-
 import { GROUP_ID } from "../config.js";
 import { send, safeKVPut, getGroupKV } from "../kv.js";
 import {
@@ -396,8 +394,32 @@ export async function handleGroupCommand(API, msg, KV) {
   if (cmd === "/unmute") {
     let targetId = null;
     let targetLabel = "";
+    const rawTarget = String(a || "").trim();
 
-    if (msg.reply_to_message) {
+    if (rawTarget) {
+      if (/^\d+$/.test(rawTarget)) {
+        targetId = Number(rawTarget);
+        targetLabel = rawTarget;
+      } else if (/^@[\w\d_]{5,}$/.test(rawTarget)) {
+        const username = rawTarget.slice(1).toLowerCase();
+        const resolvedId = await getCachedUserIdByUsername(KV, chatId, username);
+
+        if (!resolvedId) {
+          await reply(
+            "❌ Username belum ditemukan di cache bot.\nSuruh user kirim pesan dulu di group, atau reply pesan user, atau pakai user_id."
+          );
+          return true;
+        }
+
+        targetId = Number(resolvedId);
+        targetLabel = rawTarget;
+      } else {
+        await reply(
+          "❌ Format salah. Gunakan: /unmute @username atau user_id"
+        );
+        return true;
+      }
+    } else if (msg.reply_to_message) {
       const repliedUser = msg.reply_to_message.from;
 
       if (repliedUser?.id && !repliedUser.is_bot) {
@@ -429,37 +451,10 @@ export async function handleGroupCommand(API, msg, KV) {
         return true;
       }
     } else {
-      const rawTarget = String(a || "").trim();
-
-      if (!rawTarget) {
-        await reply(
-          "❌ Gunakan: /unmute @username atau user_id, atau reply pesan user / pesan mute bot lalu kirim /unmute"
-        );
-        return true;
-      }
-
-      if (/^\d+$/.test(rawTarget)) {
-        targetId = Number(rawTarget);
-        targetLabel = rawTarget;
-      } else if (/^@[\w\d_]{5,}$/.test(rawTarget)) {
-        const username = rawTarget.slice(1).toLowerCase();
-        const resolvedId = await getCachedUserIdByUsername(KV, chatId, username);
-
-        if (!resolvedId) {
-          await reply(
-            "❌ Username belum ditemukan di cache bot.\nSuruh user kirim pesan dulu di group, atau reply pesan user, atau pakai user_id."
-          );
-          return true;
-        }
-
-        targetId = Number(resolvedId);
-        targetLabel = rawTarget;
-      } else {
-        await reply(
-          "❌ Format salah. Gunakan: /unmute @username atau user_id"
-        );
-        return true;
-      }
+      await reply(
+        "❌ Gunakan: /unmute @username atau user_id, atau reply pesan user / pesan mute bot lalu kirim /unmute"
+      );
+      return true;
     }
 
     if (!targetId) {
