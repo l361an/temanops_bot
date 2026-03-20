@@ -145,9 +145,7 @@ export async function linkAllowed(text, KV, chatId) {
     }
 
     const whitelisted = isWhitelistedUrl(url, wl);
-    if (whitelisted) {
-      continue;
-    }
+    if (whitelisted) continue;
 
     if (mode === "whitelistonly") {
       return false;
