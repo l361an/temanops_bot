@@ -4,8 +4,8 @@ export const GROUP_ID = -1001901372111;
 export const LOG_THREAD_ID = 82107;
 
 export const LINK_REGEX =
-  /\b((?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?|t\.me\/[^\s]+|telegram\.me\/[^\s]+|wa\.me\/[^\s]+|bit\.ly\/[^\s]+|tinyurl\.com\/[^\s]+)\b/gi;
-  
+  /\b(?:https?:\/\/[^\s]+|www\.[^\s]+|t\.me\/[^\s]+|telegram\.me\/[^\s]+|wa\.me\/[^\s]+|bit\.ly\/[^\s]+|tinyurl\.com\/[^\s]+)\b/gi;
+
 export const DEFAULTS = {
   flood_limit: "5",
   flood_window: "10",
