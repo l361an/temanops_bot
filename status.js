@@ -126,12 +126,14 @@ export async function punish(API, msg, KV, reason) {
 
   const title = await getTemanOpsTitle(KV, chatId);
   const logTarget = await getGroupLogTarget(KV, chatId);
+  const offenderUsername = msg.from.username ? `@${msg.from.username}` : "-";
 
   const logText =
 `📋 *LOG PELANGGARAN*
 
 🏠 ${escapeBasicMarkdown(title || String(chatId))}
 👤 ${escapeBasicMarkdown(msg.from.first_name || "-")}
+🔗 ${escapeBasicMarkdown(offenderUsername)}
 🆔 ${msg.from.id}
 
 🚫 *Alasan*
