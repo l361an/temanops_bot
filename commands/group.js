@@ -1,7 +1,7 @@
 // commands/group.js
 
 import { GROUP_ID } from "../config.js";
-import { send, safeKVPut } from "../kv.js";
+import { send, safeKVPut, getGroupKV } from "../kv.js";
 import {
   canManageTemanOps,
   canUseGroupAdminCommands
@@ -13,7 +13,7 @@ import {
   setGroupLogTarget,
   getGroupLogTarget
 } from "../status.js";
-import { unmute } from "../moderation.js";
+import { mute, unmute } from "../moderation.js";
 import { getCachedUserIdByUsername } from "../userCache.js";
 import {
   setUsernameWatchTarget,
@@ -57,6 +57,7 @@ export async function handleGroupCommand(API, msg, KV) {
     "/aktifkanpengawasan",
     "/nonaktifkanpengawasan",
     "/statuspengawasan",
+    "/mute",
     "/unmute",
     "/listcmdgroup"
   ]);
@@ -309,6 +310,8 @@ export async function handleGroupCommand(API, msg, KV) {
 • /statuspengawasan
 
 *User Control*
+• reply pesan user lalu /mute
+• reply pesan user lalu /mute [menit]
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 
@@ -333,6 +336,59 @@ export async function handleGroupCommand(API, msg, KV) {
 ℹ️ /aktifkanlogtemanops dan /nonaktifkanlogtemanops dijalankan di topic target log.
 ℹ️ /aktifkanpengawasan, /nonaktifkanpengawasan, dan /statuspengawasan dijalankan di topic target pengawasan.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
+    );
+    return true;
+  }
+
+  if (cmd === "/mute") {
+    let targetId = null;
+    let targetLabel = "";
+    const defaultMinutes = Number(await getGroupKV(KV, chatId, "mute_minutes")) || 60;
+    let minutes = defaultMinutes;
+
+    if (msg.reply_to_message?.from?.id) {
+      targetId = Number(msg.reply_to_message.from.id);
+      targetLabel = msg.reply_to_message.from.username
+        ? `@${msg.reply_to_message.from.username}`
+        : String(targetId);
+
+      if (a) {
+        if (!/^\d+$/.test(String(a).trim())) {
+          await reply(
+            "❌ Format salah.\nGunakan reply pesan user lalu /mute atau /mute <menit>"
+          );
+          return true;
+        }
+        minutes = Number(a);
+      }
+    } else {
+      await reply(
+        "❌ Gunakan reply pesan user lalu /mute atau /mute <menit>\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30"
+      );
+      return true;
+    }
+
+    if (!targetId) {
+      await reply("❌ User tidak ditemukan");
+      return true;
+    }
+
+    if (!minutes || minutes <= 0) {
+      await reply("❌ Durasi mute harus lebih dari 0 menit.");
+      return true;
+    }
+
+    const ok = await mute(API, chatId, targetId, minutes);
+
+    if (!ok) {
+      await reply(
+        `❌ Mute gagal untuk ${targetLabel || targetId}\nCek apakah bot masih admin dan punya izin restrict members.`
+      );
+      return true;
+    }
+
+    await reply(
+      `🔇 MUTE BERHASIL\nTarget: ${targetLabel || targetId}\nDurasi: ${minutes} menit`
     );
     return true;
   }
