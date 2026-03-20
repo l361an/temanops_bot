@@ -132,6 +132,7 @@ async function fetchMute(API, chatId, userId, until, enableAll) {
 }
 
 export async function linkAllowed(text, KV, chatId) {
+  const mode = normalizeLinkMode(await getGroupKV(KV, chatId, "link_mode"));
   const wl = safeJSON(await getGroupKV(KV, chatId, "link_whitelist"), []);
   const bl = safeJSON(await getGroupKV(KV, chatId, "link_blacklist"), []);
 
@@ -143,24 +144,58 @@ export async function linkAllowed(text, KV, chatId) {
       url = "https://" + url;
     }
 
-    if (Array.isArray(wl) && wl.some(w => {
-      if (!w) return false;
-      if (w.includes("/")) return url.includes(w);
-      const host = extractDomain(url);
-      return host ? host.endsWith(w) : false;
-    })) {
+    const whitelisted = isWhitelistedUrl(url, wl);
+    if (whitelisted) {
       continue;
+    }
+
+    if (mode === "whitelistonly") {
+      return false;
     }
 
     const domain = extractDomain(url);
     if (!domain) continue;
 
-    if (Array.isArray(bl) && bl.some(b => b && (domain === b || domain.endsWith("." + b)))) {
+    if (isBlacklistedDomain(domain, bl)) {
       return false;
     }
   }
 
   return true;
+}
+
+function normalizeLinkMode(mode) {
+  return String(mode || "hybrid").trim().toLowerCase() === "whitelistonly"
+    ? "whitelistonly"
+    : "hybrid";
+}
+
+function isWhitelistedUrl(url, whitelist) {
+  if (!Array.isArray(whitelist)) return false;
+
+  const host = extractDomain(url);
+
+  return whitelist.some(entry => {
+    const rule = String(entry || "").trim().toLowerCase();
+    if (!rule) return false;
+
+    if (rule.includes("/")) {
+      return url.includes(rule);
+    }
+
+    if (!host) return false;
+    return host === rule || host.endsWith(`.${rule}`);
+  });
+}
+
+function isBlacklistedDomain(domain, blacklist) {
+  if (!Array.isArray(blacklist)) return false;
+
+  return blacklist.some(entry => {
+    const rule = String(entry || "").trim().toLowerCase();
+    if (!rule) return false;
+    return domain === rule || domain.endsWith(`.${rule}`);
+  });
 }
 
 function extractDomain(url) {
