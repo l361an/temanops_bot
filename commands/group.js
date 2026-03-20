@@ -388,7 +388,7 @@ export async function handleGroupCommand(API, msg, KV) {
     }
 
     await reply(
-      `🔇 MUTE BERHASIL\nTarget: ${targetLabel || targetId}\nDurasi: ${minutes} menit`
+      `🔇 MUTE BERHASIL\nTarget: ${targetLabel || targetId}\nTarget ID: ${targetId}\nDurasi: ${minutes} menit`
     );
     return true;
   }
@@ -397,17 +397,43 @@ export async function handleGroupCommand(API, msg, KV) {
     let targetId = null;
     let targetLabel = "";
 
-    if (msg.reply_to_message?.from?.id) {
-      targetId = Number(msg.reply_to_message.from.id);
-      targetLabel = msg.reply_to_message.from.username
-        ? `@${msg.reply_to_message.from.username}`
-        : String(targetId);
+    if (msg.reply_to_message) {
+      const repliedUser = msg.reply_to_message.from;
+
+      if (repliedUser?.id && !repliedUser.is_bot) {
+        targetId = Number(repliedUser.id);
+        targetLabel = repliedUser.username
+          ? `@${repliedUser.username}`
+          : String(targetId);
+      } else if (repliedUser?.is_bot) {
+        const replyText = String(
+          msg.reply_to_message.text ||
+          msg.reply_to_message.caption ||
+          ""
+        );
+
+        const idMatch = replyText.match(/Target ID:\s*(\d+)/i);
+        if (idMatch) {
+          targetId = Number(idMatch[1]);
+          targetLabel = String(targetId);
+        } else {
+          await reply(
+            "❌ Reply ke pesan user asli, atau reply ke pesan bot yang berisi *Target ID*, atau pakai /unmute @username / user_id"
+          );
+          return true;
+        }
+      } else {
+        await reply(
+          "❌ Reply ke pesan user asli, atau pakai /unmute @username / user_id"
+        );
+        return true;
+      }
     } else {
       const rawTarget = String(a || "").trim();
 
       if (!rawTarget) {
         await reply(
-          "❌ Gunakan: /unmute @username atau user_id, atau reply pesan user lalu kirim /unmute"
+          "❌ Gunakan: /unmute @username atau user_id, atau reply pesan user / pesan mute bot lalu kirim /unmute"
         );
         return true;
       }
