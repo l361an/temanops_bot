@@ -36,7 +36,14 @@ export async function handleModeration(API, msg, KV) {
       .filter(Boolean);
 
     for (const w of banned) {
-      if (w && text.includes(w)) {
+      if (!w) continue;
+
+      const pattern = new RegExp(
+        `(^|[^a-z0-9_])${escapeRegex(w)}($|[^a-z0-9_])`,
+        "i"
+      );
+
+      if (pattern.test(text)) {
         await del(API, msg.chat.id, msg.message_id);
         await punish(API, msg, KV, "Menggunakan kata terlarang");
         return;
@@ -140,7 +147,9 @@ export async function linkAllowed(text, KV, chatId) {
   if (!urls) return true;
 
   for (let url of urls) {
-    if (!/^https?:\/\//i.test(url)) {
+    if (!/^https?:\/\//i.test(url) && !/^www\./i.test(url)) {
+      url = "https://" + url;
+    } else if (/^www\./i.test(url)) {
       url = "https://" + url;
     }
 
@@ -202,4 +211,8 @@ function extractDomain(url) {
   } catch {
     return null;
   }
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
