@@ -128,6 +128,10 @@ export default {
             }
           }
         }
+
+        if (isGroupChat) {
+          return new Response("OK");
+        }
       }
 
       if (
