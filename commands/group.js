@@ -74,6 +74,13 @@ export async function handleGroupCommand(API, msg, KV) {
     "/listwelcomelink"
   ]);
 
+  const creatorOnlyRuntimeCommands = new Set([
+    "/aktifkanlogtemanops",
+    "/nonaktifkanlogtemanops",
+    "/aktifkanpengawasan",
+    "/nonaktifkanpengawasan"
+  ]);
+
   if (!["group", "supergroup"].includes(msg.chat.type)) {
     if (groupCommands.has(cmd) || movedToPrivateCommands.has(cmd)) {
       await send(API, msg.chat.id, "❌ Command ini hanya di group");
@@ -159,6 +166,16 @@ export async function handleGroupCommand(API, msg, KV) {
   if (!adminAllowed.ok) {
     await reply(adminAllowed.message);
     return true;
+  }
+
+  if (creatorOnlyRuntimeCommands.has(cmd)) {
+    const allowed = await canManageTemanOps(API, msg);
+    if (!allowed) {
+      await reply(
+        "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
+      );
+      return true;
+    }
   }
 
   if (cmd === "/aktifkanlogtemanops") {
