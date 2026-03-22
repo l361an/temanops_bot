@@ -18,18 +18,53 @@ import {
   getUsernameWatchTarget,
   clearUsernameWatchTarget
 } from "../surveillance.js";
-import {
-  setIdentityTrackerTarget,
-  getIdentityTrackerTarget,
-  clearIdentityTrackerTarget
-} from "../identityTracker.js";
 import { escapeBasicMarkdown } from "../utils.js";
+
+function normalizeTelegramUsername(value) {
+  return String(value || "").trim().replace(/^@+/, "").toLowerCase();
+}
+
+function isReservedAnonymousUsername(rawTarget) {
+  return normalizeTelegramUsername(rawTarget) === "groupanonymousbot";
+}
+
+function classifyReplyTarget(replyMsg, chatId) {
+  if (!replyMsg) return { kind: "none" };
+
+  if (replyMsg.sender_chat?.id) {
+    if (String(replyMsg.sender_chat.id) === String(chatId)) {
+      return { kind: "anonymous_admin" };
+    }
+    return { kind: "sender_chat" };
+  }
+
+  const repliedUser = replyMsg.from;
+  if (!repliedUser?.id) {
+    return { kind: "unknown" };
+  }
+
+  const uname = normalizeTelegramUsername(repliedUser.username);
+  if (uname === "groupanonymousbot") {
+    return { kind: "anonymous_admin" };
+  }
+
+  if (repliedUser.is_bot) {
+    return { kind: "bot", user: repliedUser };
+  }
+
+  return { kind: "user", user: repliedUser };
+}
+
+function extractTargetIdFromBotReply(replyMsg) {
+  const replyText = String(replyMsg?.text || replyMsg?.caption || "");
+  const idMatch = replyText.match(/Target ID:\s*(\d+)/i);
+  return idMatch ? Number(idMatch[1]) : null;
+}
 
 export async function handleGroupCommand(API, msg, KV) {
   const parts = String(msg.text || "").trim().split(/\s+/);
   const raw = parts[0] || "";
-  const a = String(parts[1] || "").trim().toLowerCase();
-  const b = parts[2];
+  const a = parts[1];
   const cmd = raw.split("@")[0].toLowerCase();
   const chatId = Number(msg.chat.id);
   const replyThreadId = msg.message_thread_id ? Number(msg.message_thread_id) : null;
@@ -52,11 +87,15 @@ export async function handleGroupCommand(API, msg, KV) {
     return false;
   };
 
-  const runtimeCommands = new Set([
-    "/temanops",
-    "/log",
-    "/watcher",
-    "/tracker",
+  const groupCommands = new Set([
+    "/aktifkantemanops",
+    "/nonaktifkantemanops",
+    "/statustemanops",
+    "/aktifkanlogtemanops",
+    "/nonaktifkanlogtemanops",
+    "/aktifkanpengawasan",
+    "/nonaktifkanpengawasan",
+    "/statuspengawasan",
     "/mute",
     "/unmute",
     "/listcmdgroup"
@@ -76,8 +115,15 @@ export async function handleGroupCommand(API, msg, KV) {
     "/listwelcomelink"
   ]);
 
+  const creatorOnlyRuntimeCommands = new Set([
+    "/aktifkanlogtemanops",
+    "/nonaktifkanlogtemanops",
+    "/aktifkanpengawasan",
+    "/nonaktifkanpengawasan"
+  ]);
+
   if (!["group", "supergroup"].includes(msg.chat.type)) {
-    if (runtimeCommands.has(cmd) || movedToPrivateCommands.has(cmd)) {
+    if (groupCommands.has(cmd) || movedToPrivateCommands.has(cmd)) {
       await send(API, msg.chat.id, "❌ Command ini hanya di group");
       return true;
     }
@@ -86,19 +132,14 @@ export async function handleGroupCommand(API, msg, KV) {
 
   if (movedToPrivateCommands.has(cmd)) {
     await reply(
-      `ℹ️ Command config ini sekarang dijalankan via private bot.\nGunakan /listgroup di private, lalu pilih group target dengan /setgroup.\nBot akan tampilkan nama group + ID agar tidak ketuker.`
+      "ℹ️ Command config ini sekarang dijalankan via private bot.\nGunakan /listgroup di private, lalu pilih group target dengan /setgroup.\nBot akan tampilkan nama group + ID agar tidak ketuker."
     );
     return true;
   }
 
-  if (!runtimeCommands.has(cmd)) return false;
+  if (!groupCommands.has(cmd)) return false;
 
-  if (cmd === "/temanops") {
-    if (!["on", "off", "status"].includes(a)) {
-      await reply("❌ Gunakan: /temanops on|off|status");
-      return true;
-    }
-
+  if (cmd === "/aktifkantemanops") {
     if (await requireGeneralOnly()) return true;
 
     const allowed = await canManageTemanOps(API, msg);
@@ -109,29 +150,41 @@ export async function handleGroupCommand(API, msg, KV) {
       return true;
     }
 
-    if (a === "on") {
-      await setTemanOpsEnabled(KV, chatId, true);
-      await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
-      await setGroupLogTarget(KV, chatId, chatId, null);
+    await setTemanOpsEnabled(KV, chatId, true);
+    await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
+    await setGroupLogTarget(KV, chatId, chatId, null);
 
-      await reply("✅ *TeManOps aktif* di group ini");
+    await reply("✅ *TeManOps aktif* di group ini");
+    return true;
+  }
+
+  if (cmd === "/nonaktifkantemanops") {
+    if (await requireGeneralOnly()) return true;
+
+    const allowed = await canManageTemanOps(API, msg);
+    if (!allowed) {
+      await reply(
+        "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
+      );
       return true;
     }
 
-    if (a === "off") {
-      if (chatId === Number(GROUP_ID)) {
-        await reply(
-          "⚠️ Group legacy utama tidak bisa dinonaktifkan pada tahap ini"
-        );
-        return true;
-      }
-
-      await setTemanOpsEnabled(KV, chatId, false);
-      await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
-
-      await reply("⛔ *TeManOps nonaktif* di group ini");
+    if (chatId === Number(GROUP_ID)) {
+      await reply(
+        "⚠️ Group legacy utama tidak bisa dinonaktifkan pada tahap ini"
+      );
       return true;
     }
+
+    await setTemanOpsEnabled(KV, chatId, false);
+    await safeKVPut(KV, `temanops_title:${chatId}`, String(msg.chat.title || chatId));
+
+    await reply("⛔ *TeManOps nonaktif* di group ini");
+    return true;
+  }
+
+  if (cmd === "/statustemanops") {
+    if (await requireGeneralOnly()) return true;
 
     const enabled = await isTemanOpsEnabled(KV, chatId);
     const title = await getTemanOpsTitle(KV, chatId);
@@ -144,14 +197,8 @@ export async function handleGroupCommand(API, msg, KV) {
 
     await reply(
       enabled
-        ? `✅ Status TeManOps: *AKTIF*
-🏠 Group: ${escapeBasicMarkdown(title)}
-🆔 ID: \`${chatId}\`
-📝 Log target: ${escapeBasicMarkdown(logInfo)}`
-        : `⛔ Status TeManOps: *NONAKTIF*
-🏠 Group: ${escapeBasicMarkdown(title)}
-🆔 ID: \`${chatId}\`
-📝 Log target: ${escapeBasicMarkdown(logInfo)}`
+        ? `✅ Status TeManOps: *AKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
+        : `⛔ Status TeManOps: *NONAKTIF*\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📝 Log target: ${escapeBasicMarkdown(logInfo)}`
     );
     return true;
   }
@@ -162,260 +209,140 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
-  if (cmd === "/log") {
-    if (!["on", "off", "status"].includes(a)) {
-      await reply("❌ Gunakan: /log on|off|status");
-      return true;
-    }
-
-    if (["on", "off"].includes(a)) {
-      const allowed = await canManageTemanOps(API, msg);
-      if (!allowed) {
-        await reply(
-          "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
-        );
-        return true;
-      }
-    }
-
-    if (a === "on") {
-      if (await requireTopicOnly("log")) return true;
-
-      await setGroupLogTarget(KV, chatId, chatId, replyThreadId);
-
-      await send(
-        API,
-        msg.chat.id,
-        "✅ Log TeManOps untuk group ini sekarang diarahkan ke topic ini.",
-        replyThreadId
+  if (creatorOnlyRuntimeCommands.has(cmd)) {
+    const allowed = await canManageTemanOps(API, msg);
+    if (!allowed) {
+      await reply(
+        "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
       );
       return true;
     }
+  }
 
-    if (a === "off") {
-      const currentTarget = await getGroupLogTarget(KV, chatId);
+  if (cmd === "/aktifkanlogtemanops") {
+    if (await requireTopicOnly("log")) return true;
 
-      if (!currentTarget?.thread_id) {
-        await reply("⚠️ Log TeManOps saat ini sudah diarahkan ke *General*.");
-        return true;
-      }
+    await setGroupLogTarget(KV, chatId, chatId, replyThreadId);
 
-      if (!replyThreadId) {
-        await reply(
-          "❌ Command ini wajib dijalankan di topic target log yang sedang aktif."
-        );
-        return true;
-      }
-
-      if (Number(currentTarget.thread_id) !== replyThreadId) {
-        await reply("⚠️ Topic ini bukan target log TeManOps yang aktif.");
-        return true;
-      }
-
-      await setGroupLogTarget(KV, chatId, chatId, null);
-      await reply("✅ Log TeManOps untuk group ini dikembalikan ke *General*.");
-      return true;
-    }
-
-    const title = await getTemanOpsTitle(KV, chatId);
-    const target = await getGroupLogTarget(KV, chatId);
-    const targetLabel = target?.thread_id ? `Topic ID ${target.thread_id}` : "General";
-
-    await reply(
-      `📝 *Status Log TeManOps*
-
-🏠 Group: ${escapeBasicMarkdown(title)}
-🆔 ID: \`${chatId}\`
-📌 Status: AKTIF
-📝 Target: ${escapeBasicMarkdown(targetLabel)}`
+    await send(
+      API,
+      msg.chat.id,
+      "✅ Log TeManOps untuk group ini sekarang diarahkan ke topic ini.",
+      replyThreadId
     );
     return true;
   }
 
-  if (cmd === "/watcher") {
-    if (!["on", "off", "status"].includes(a)) {
-      await reply("❌ Gunakan: /watcher on|off|status");
+  if (cmd === "/nonaktifkanlogtemanops") {
+    const currentTarget = await getGroupLogTarget(KV, chatId);
+
+    if (!currentTarget?.thread_id) {
+      await reply("⚠️ Log TeManOps saat ini sudah diarahkan ke *General*.");
       return true;
     }
 
-    if (["on", "off"].includes(a)) {
-      const allowed = await canManageTemanOps(API, msg);
-      if (!allowed) {
-        await reply(
-          "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
-        );
-        return true;
-      }
-    }
-
-    if (a === "on") {
-      if (await requireTopicOnly("watcher")) return true;
-
-      await setUsernameWatchTarget(KV, chatId, chatId, replyThreadId);
-
-      await send(
-        API,
-        msg.chat.id,
-        `✅ Watcher user tanpa username sekarang aktif di topic ini.\nKartu watcher akan otomatis dihapus saat user sudah pasang username.`,
-        replyThreadId
+    if (!replyThreadId) {
+      await reply(
+        "❌ Command ini wajib dijalankan di topic target log yang sedang aktif."
       );
       return true;
     }
 
-    if (a === "off") {
-      const target = await getUsernameWatchTarget(KV, chatId);
+    if (Number(currentTarget.thread_id) !== replyThreadId) {
+      await reply("⚠️ Topic ini bukan target log TeManOps yang aktif.");
+      return true;
+    }
 
-      if (!target?.chat_id) {
-        await reply("⚠️ Watcher user tanpa username saat ini *NONAKTIF*.");
-        return true;
-      }
+    await setGroupLogTarget(KV, chatId, chatId, null);
+    await reply("✅ Log TeManOps untuk group ini dikembalikan ke *General*.");
+    return true;
+  }
 
-      if (!target.thread_id) {
-        if (replyThreadId) {
-          await reply("⚠️ Watcher aktif di *General*. Jalankan command ini di *General*.");
-          return true;
-        }
+  if (cmd === "/aktifkanpengawasan") {
+    if (await requireTopicOnly("pengawasan")) return true;
 
-        await clearUsernameWatchTarget(KV, chatId);
-        await reply("✅ Watcher user tanpa username dinonaktifkan untuk group ini.");
-        return true;
-      }
+    await setUsernameWatchTarget(KV, chatId, chatId, replyThreadId);
 
-      if (!replyThreadId) {
-        await reply(
-          "❌ Command ini wajib dijalankan di topic target watcher yang sedang aktif."
-        );
-        return true;
-      }
+    await send(
+      API,
+      msg.chat.id,
+      "✅ Pengawasan user tanpa username sekarang aktif di topic ini.\nKartu pengawasan akan otomatis dihapus saat user sudah pasang username.",
+      replyThreadId
+    );
+    return true;
+  }
 
-      if (Number(target.thread_id) !== replyThreadId) {
-        await reply("⚠️ Topic ini bukan target watcher yang aktif.");
+  if (cmd === "/nonaktifkanpengawasan") {
+    const target = await getUsernameWatchTarget(KV, chatId);
+
+    if (!target?.chat_id) {
+      await reply("⚠️ Pengawasan user tanpa username saat ini *NONAKTIF*.");
+      return true;
+    }
+
+    if (!target.thread_id) {
+      if (replyThreadId) {
+        await reply("⚠️ Pengawasan aktif di *General*. Jalankan command ini di *General*.");
         return true;
       }
 
       await clearUsernameWatchTarget(KV, chatId);
-      await reply("✅ Watcher user tanpa username dinonaktifkan untuk group ini.");
+      await reply("✅ Pengawasan user tanpa username dinonaktifkan untuk group ini.");
       return true;
     }
 
+    if (!replyThreadId) {
+      await reply(
+        "❌ Command ini wajib dijalankan di topic target pengawasan yang sedang aktif."
+      );
+      return true;
+    }
+
+    if (Number(target.thread_id) !== replyThreadId) {
+      await reply("⚠️ Topic ini bukan target pengawasan yang aktif.");
+      return true;
+    }
+
+    await clearUsernameWatchTarget(KV, chatId);
+    await reply("✅ Pengawasan user tanpa username dinonaktifkan untuk group ini.");
+    return true;
+  }
+
+  if (cmd === "/statuspengawasan") {
     const title = await getTemanOpsTitle(KV, chatId);
     const target = await getUsernameWatchTarget(KV, chatId);
 
     if (!target?.chat_id) {
       await reply(
-        `👁️ *Status Watcher*
-
-🏠 Group: ${escapeBasicMarkdown(title)}
-🆔 ID: \`${chatId}\`
-📌 Status: NONAKTIF
-📝 Target: -`
+        `👁️ *Status Pengawasan Username*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Status: NONAKTIF\n📝 Target: -`
       );
       return true;
     }
 
-    const targetLabel = target.thread_id ? `Topic ID ${target.thread_id}` : "General";
-
-    await reply(
-      `👁️ *Status Watcher*
-
-🏠 Group: ${escapeBasicMarkdown(title)}
-🆔 ID: \`${chatId}\`
-📌 Status: AKTIF
-📝 Target: ${escapeBasicMarkdown(targetLabel)}`
-    );
-    return true;
-  }
-
-  if (cmd === "/tracker") {
-    if (!["on", "off", "status"].includes(a)) {
-      await reply("❌ Gunakan: /tracker on|off|status");
-      return true;
-    }
-
-    if (["on", "off"].includes(a)) {
-      const allowed = await canManageTemanOps(API, msg);
-      if (!allowed) {
-        await reply(
-          "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
-        );
-        return true;
-      }
-    }
-
-    if (a === "on") {
-      if (await requireTopicOnly("tracker")) return true;
-
-      await setIdentityTrackerTarget(KV, chatId, chatId, replyThreadId);
-
-      await send(
-        API,
-        msg.chat.id,
-        `✅ Tracker identitas sekarang aktif di topic ini.\nBot akan melaporkan perubahan username, nama depan, dan nama belakang.`,
-        replyThreadId
-      );
-      return true;
-    }
-
-    if (a === "off") {
-      const target = await getIdentityTrackerTarget(KV, chatId);
-
-      if (!target?.chat_id) {
-        await reply("⚠️ Tracker identitas saat ini *NONAKTIF*.");
+    if (!target.thread_id) {
+      if (replyThreadId) {
+        await reply("⚠️ Pengawasan aktif di *General*, bukan di topic ini.");
         return true;
       }
 
-      if (!target.thread_id) {
-        if (replyThreadId) {
-          await reply("⚠️ Tracker aktif di *General*. Jalankan command ini di *General*.");
-          return true;
-        }
-
-        await clearIdentityTrackerTarget(KV, chatId);
-        await reply("✅ Tracker identitas dinonaktifkan untuk group ini.");
-        return true;
-      }
-
-      if (!replyThreadId) {
-        await reply(
-          "❌ Command ini wajib dijalankan di topic target tracker yang sedang aktif."
-        );
-        return true;
-      }
-
-      if (Number(target.thread_id) !== replyThreadId) {
-        await reply("⚠️ Topic ini bukan target tracker yang aktif.");
-        return true;
-      }
-
-      await clearIdentityTrackerTarget(KV, chatId);
-      await reply("✅ Tracker identitas dinonaktifkan untuk group ini.");
-      return true;
-    }
-
-    const title = await getTemanOpsTitle(KV, chatId);
-    const target = await getIdentityTrackerTarget(KV, chatId);
-
-    if (!target?.chat_id) {
       await reply(
-        `🕵️ *Status Tracker*
-
-🏠 Group: ${escapeBasicMarkdown(title)}
-🆔 ID: \`${chatId}\`
-📌 Status: NONAKTIF
-📝 Target: -`
+        `👁️ *Status Pengawasan Username*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Status: AKTIF\n📝 Target: General`
       );
       return true;
     }
 
-    const targetLabel = target.thread_id ? `Topic ID ${target.thread_id}` : "General";
+    if (!replyThreadId) {
+      await reply("⚠️ Pengawasan aktif di topic lain, bukan di *General*.");
+      return true;
+    }
+
+    if (Number(target.thread_id) !== replyThreadId) {
+      await reply("⚠️ Topic ini bukan target pengawasan yang aktif.");
+      return true;
+    }
 
     await reply(
-      `🕵️ *Status Tracker*
-
-🏠 Group: ${escapeBasicMarkdown(title)}
-🆔 ID: \`${chatId}\`
-📌 Status: AKTIF
-📝 Target: ${escapeBasicMarkdown(targetLabel)}`
+      `👁️ *Status Pengawasan Username*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Status: AKTIF\n📝 Target: Topic ID ${target.thread_id}`
     );
     return true;
   }
@@ -425,24 +352,18 @@ export async function handleGroupCommand(API, msg, KV) {
 `🛠️ *Group Commands*
 
 *General Only*
-• /temanops on
-• /temanops off
-• /temanops status
+• /aktifkantemanops
+• /nonaktifkantemanops
+• /statustemanops
 
 *Topic Log*
-• /log on
-• /log off
-• /log status
+• /aktifkanlogtemanops
+• /nonaktifkanlogtemanops
 
-*Topic Watcher*
-• /watcher on
-• /watcher off
-• /watcher status
-
-*Topic Tracker*
-• /tracker on
-• /tracker off
-• /tracker status
+*Topic Pengawasan Username*
+• /aktifkanpengawasan
+• /nonaktifkanpengawasan
+• /statuspengawasan
 
 *User Control*
 • reply pesan user lalu /mute
@@ -467,10 +388,9 @@ export async function handleGroupCommand(API, msg, KV) {
 • /delwelcomelink [judul]
 • /listwelcomelink
 
-ℹ️ /temanops on|off|status wajib dijalankan di *General*.
-ℹ️ /log on|off dijalankan di topic target log. /log status bisa dicek dari mana saja di group.
-ℹ️ /watcher on|off dijalankan di topic target watcher. /watcher status bisa dicek dari mana saja di group.
-ℹ️ /tracker on|off dijalankan di topic target tracker. /tracker status bisa dicek dari mana saja di group.
+ℹ️ Command status hidup-mati TeManOps wajib dijalankan di *General*.
+ℹ️ /aktifkanlogtemanops dan /nonaktifkanlogtemanops dijalankan di topic target log.
+ℹ️ /aktifkanpengawasan, /nonaktifkanpengawasan, dan /statuspengawasan dijalankan di topic target pengawasan.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
     return true;
@@ -482,24 +402,38 @@ export async function handleGroupCommand(API, msg, KV) {
     const defaultMinutes = Number(await getGroupKV(KV, chatId, "mute_minutes")) || 60;
     let minutes = defaultMinutes;
 
-    if (msg.reply_to_message?.from?.id) {
-      targetId = Number(msg.reply_to_message.from.id);
-      targetLabel = msg.reply_to_message.from.username
-        ? `@${msg.reply_to_message.from.username}`
-        : String(targetId);
+    if (msg.reply_to_message) {
+      const replyTarget = classifyReplyTarget(msg.reply_to_message, chatId);
 
-      if (a) {
-        if (!/^\d+$/.test(String(a).trim())) {
-          await reply(
-            `❌ Format salah.\nGunakan reply pesan user lalu /mute atau /mute <menit>`
-          );
-          return true;
+      if (replyTarget.kind === "user") {
+        targetId = Number(replyTarget.user.id);
+        targetLabel = replyTarget.user.username
+          ? `@${replyTarget.user.username}`
+          : String(targetId);
+
+        if (a) {
+          if (!/^\d+$/.test(String(a).trim())) {
+            await reply(
+              "❌ Format salah.\nGunakan reply pesan user lalu /mute atau /mute <menit>"
+            );
+            return true;
+          }
+          minutes = Number(a);
         }
-        minutes = Number(a);
+      } else if (replyTarget.kind === "anonymous_admin" || replyTarget.kind === "sender_chat") {
+        await reply(
+          "❌ Reply target ini bukan member asli. Jangan reply pesan anonymous admin / sender chat. Reply pesan user asli lalu kirim /mute."
+        );
+        return true;
+      } else {
+        await reply(
+          "❌ Gunakan reply pesan user lalu /mute atau /mute <menit>\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30"
+        );
+        return true;
       }
     } else {
       await reply(
-        `❌ Gunakan reply pesan user lalu /mute atau /mute <menit>\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30`
+        "❌ Gunakan reply pesan user lalu /mute atau /mute <menit>\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30"
       );
       return true;
     }
@@ -539,6 +473,13 @@ export async function handleGroupCommand(API, msg, KV) {
         targetId = Number(rawTarget);
         targetLabel = rawTarget;
       } else if (/^@[\w\d_]{5,}$/.test(rawTarget)) {
+        if (isReservedAnonymousUsername(rawTarget)) {
+          await reply(
+            "❌ @GroupAnonymousBot bukan member asli. Gunakan /unmute @username member atau user_id member yang valid."
+          );
+          return true;
+        }
+
         const username = rawTarget.slice(1).toLowerCase();
         const resolvedId = await getCachedUserIdByUsername(KV, chatId, username);
 
@@ -558,30 +499,29 @@ export async function handleGroupCommand(API, msg, KV) {
         return true;
       }
     } else if (msg.reply_to_message) {
-      const repliedUser = msg.reply_to_message.from;
+      const replyTarget = classifyReplyTarget(msg.reply_to_message, chatId);
 
-      if (repliedUser?.id && !repliedUser.is_bot) {
-        targetId = Number(repliedUser.id);
-        targetLabel = repliedUser.username
-          ? `@${repliedUser.username}`
+      if (replyTarget.kind === "user") {
+        targetId = Number(replyTarget.user.id);
+        targetLabel = replyTarget.user.username
+          ? `@${replyTarget.user.username}`
           : String(targetId);
-      } else if (repliedUser?.is_bot) {
-        const replyText = String(
-          msg.reply_to_message.text ||
-          msg.reply_to_message.caption ||
-          ""
-        );
-
-        const idMatch = replyText.match(/Target ID:\s*(\d+)/i);
-        if (idMatch) {
-          targetId = Number(idMatch[1]);
-          targetLabel = String(targetId);
-        } else {
+      } else if (replyTarget.kind === "bot") {
+        const parsedTargetId = extractTargetIdFromBotReply(msg.reply_to_message);
+        if (!parsedTargetId) {
           await reply(
             "❌ Reply ke pesan user asli, atau reply ke pesan bot yang berisi *Target ID*, atau pakai /unmute @username / user_id"
           );
           return true;
         }
+
+        targetId = parsedTargetId;
+        targetLabel = String(parsedTargetId);
+      } else if (replyTarget.kind === "anonymous_admin" || replyTarget.kind === "sender_chat") {
+        await reply(
+          "❌ Reply target ini adalah anonymous admin / sender chat, bukan member asli. Reply pesan user asli, atau pakai /unmute @username / user_id."
+        );
+        return true;
       } else {
         await reply(
           "❌ Reply ke pesan user asli, atau pakai /unmute @username / user_id"
