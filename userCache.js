@@ -1,28 +1,59 @@
 // userCache.js
 
-import { safeKVGet, safeKVPut, safeKVDelete } from "./kv.js";
+import { safeJSON, safeKVGet, safeKVPut, safeKVDelete } from "./kv.js";
+
+function normalizeUsername(value) {
+  return String(value || "").trim().replace(/^@+/, "").toLowerCase();
+}
+
+function normalizeName(value) {
+  return String(value || "").trim();
+}
+
+function buildIdentity(user) {
+  return {
+    id: Number(user?.id || 0),
+    username: normalizeUsername(user?.username),
+    first_name: normalizeName(user?.first_name),
+    last_name: normalizeName(user?.last_name)
+  };
+}
+
+function sameIdentity(a, b) {
+  return (
+    Number(a?.id || 0) === Number(b?.id || 0) &&
+    normalizeUsername(a?.username) === normalizeUsername(b?.username) &&
+    normalizeName(a?.first_name) === normalizeName(b?.first_name) &&
+    normalizeName(a?.last_name) === normalizeName(b?.last_name)
+  );
+}
 
 export async function cacheUserIdentity(KV, chatId, user) {
   try {
     if (!user?.id || user?.is_bot) return false;
 
     const uid = Number(user.id);
-    await safeKVPut(
-      KV,
-      `usercache:id:${uid}`,
-      JSON.stringify({
-        id: uid,
-        username: user.username || "",
-        first_name: user.first_name || "",
-        last_name: user.last_name || ""
-      })
-    );
+    const nextIdentity = buildIdentity(user);
 
-    if (user.username) {
-      const uname = String(user.username).trim().replace(/^@/, "").toLowerCase();
-      if (uname) {
-        await safeKVPut(KV, `usercache:group:${chatId}:uname:${uname}`, String(uid));
-        await safeKVPut(KV, `usercache:global:uname:${uname}`, String(uid));
+    const idKey = `usercache:id:${uid}`;
+    const prevIdentity = safeJSON(await safeKVGet(KV, idKey), null);
+
+    const prevUsername = normalizeUsername(prevIdentity?.username);
+    const nextUsername = normalizeUsername(nextIdentity.username);
+
+    if (!sameIdentity(prevIdentity, nextIdentity)) {
+      await safeKVPut(KV, idKey, JSON.stringify(nextIdentity));
+    }
+
+    if (prevUsername !== nextUsername) {
+      if (prevUsername) {
+        await safeKVDelete(KV, `usercache:group:${chatId}:uname:${prevUsername}`);
+        await safeKVDelete(KV, `usercache:global:uname:${prevUsername}`);
+      }
+
+      if (nextUsername) {
+        await safeKVPut(KV, `usercache:group:${chatId}:uname:${nextUsername}`, String(uid));
+        await safeKVPut(KV, `usercache:global:uname:${nextUsername}`, String(uid));
       }
     }
 
