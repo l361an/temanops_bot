@@ -22,6 +22,7 @@ import {
 import { shouldRunModeration, getTemanOpsTitle } from "./status.js";
 import { escapeBasicMarkdown } from "./utils.js";
 import { auditUsernameSurveillance } from "./surveillance.js";
+import { auditIdentityTracker } from "./identityTracker.js";
 
 function getWelcomeSetupGroupKey(userId) {
   return `welcome_setup_group:${userId}`;
@@ -78,6 +79,7 @@ export default {
         if (newUser?.id) {
           await cacheUserIdentity(KV, memberChatId, newUser);
           await auditUsernameSurveillance(API, KV, memberChatId, newUser);
+          await auditIdentityTracker(API, KV, memberChatId, newUser, "chat_member");
         }
 
         if (
@@ -109,6 +111,13 @@ export default {
         await cacheUserIdentity(KV, chatId, msg.from);
         if (isGroupChat) {
           await auditUsernameSurveillance(API, KV, chatId, msg.from);
+          await auditIdentityTracker(
+            API,
+            KV,
+            chatId,
+            msg.from,
+            update.edited_message ? "edited_message" : "message"
+          );
         }
       }
 
@@ -116,6 +125,13 @@ export default {
         await cacheUserIdentity(KV, chatId, msg.reply_to_message.from);
         if (isGroupChat) {
           await auditUsernameSurveillance(API, KV, chatId, msg.reply_to_message.from);
+          await auditIdentityTracker(
+            API,
+            KV,
+            chatId,
+            msg.reply_to_message.from,
+            "reply_to_message"
+          );
         }
       }
 
@@ -125,6 +141,7 @@ export default {
             await cacheUserIdentity(KV, chatId, member);
             if (isGroupChat) {
               await auditUsernameSurveillance(API, KV, chatId, member);
+              await auditIdentityTracker(API, KV, chatId, member, "new_chat_members");
             }
           }
         }
