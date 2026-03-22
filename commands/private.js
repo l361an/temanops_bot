@@ -1,13 +1,14 @@
 // commands/private.js
 
-import { GROUP_ID } from "../config.js";
 import {
   send,
   safeJSON,
   safeKVPut,
   safeKVDelete,
   getGroupKV,
-  gkey
+  gkey,
+  getCaseRecord,
+  normalizeCaseId
 } from "../kv.js";
 import { isAdmin } from "../permissions.js";
 import {
@@ -19,7 +20,6 @@ import {
 import { tg } from "../telegram.js";
 import {
   listTemanOpsGroups,
-  isTemanOpsEnabled,
   getTemanOpsGroupSummary
 } from "../status.js";
 import {
@@ -36,9 +36,47 @@ function getWelcomeLinkTmpKey(userId) {
   return `welcome_link_tmp:${userId}`;
 }
 
-async function clearWelcomeSetupSession(KV, userId) {
-  await safeKVDelete(KV, getWelcomeSetupGroupKey(userId));
-  await safeKVDelete(KV, getWelcomeLinkTmpKey(userId));
+function truncateCaseField(value, max = 1500) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function formatJakartaDateTime(value) {
+  if (!value) return "-";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  const parts = new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+
+  const map = {};
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      map[part.type] = part.value;
+    }
+  }
+
+  const day = map.day || "00";
+  const month = map.month || "00";
+  const year = map.year || "0000";
+  const hour = map.hour || "00";
+  const minute = map.minute || "00";
+  const second = map.second || "00";
+
+  return `${day}/${month}/${year} ${hour}:${minute}:${second} WIB`;
 }
 
 function buildWelcomeButtons(links) {
@@ -83,6 +121,74 @@ function fillWelcomeTemplate(textTpl, sampleUser) {
   return String(textTpl || "Selamat Bergabung di *TeMan* 🤍")
     .replace(/{username}/gi, username)
     .replace(/{nama}/gi, nama);
+}
+
+function renderCaseDetail(record) {
+  const offenderName = record?.offender?.first_name || "-";
+  const offenderUsername = record?.offender?.username
+    ? `@${record.offender.username}`
+    : "-";
+  const punishmentLabel = record?.action?.ok === false
+    ? `Mute gagal \\(target ${Number(record?.action?.minutes || 0)} menit\\)`
+    : `Mute ${Number(record?.action?.minutes || 0)} menit`;
+  const topicLabel = record?.message_thread_id
+    ? `Topic ID ${record.message_thread_id}`
+    : "General";
+  const evidenceText = truncateCaseField(
+    record?.evidence?.text || "(pesan tanpa teks / caption)",
+    1500
+  );
+  const displayedTime = formatJakartaDateTime(
+    record?.message_date || record?.created_at || null
+  );
+
+  return `🗂️ *DETAIL CASE*
+
+🆔 *Case ID*
+\`${escapeBasicMarkdown(record?.case_id || "-")}\`
+
+🏠 *Group*
+${escapeBasicMarkdown(record?.chat_title || String(record?.chat_id || "-"))}
+🆔 Group ID: \`${record?.chat_id || "-"}\`
+🧵 Topic: ${escapeBasicMarkdown(topicLabel)}
+
+👤 *Target*
+${escapeBasicMarkdown(offenderName)}
+🔗 ${escapeBasicMarkdown(offenderUsername)}
+🆔 User ID: \`${record?.offender?.id || "-"}\`
+
+🚫 *Alasan*
+${escapeBasicMarkdown(record?.reason || "-")}
+
+⏱️ *Hukuman*
+${punishmentLabel}
+
+🕒 *Waktu Pesan*
+${escapeBasicMarkdown(displayedTime)}
+🧾 Message ID: \`${record?.message_id || "-"}\`
+📦 Jenis konten: ${escapeBasicMarkdown(record?.evidence?.content_type || "-")}
+
+📄 *Bukti Tersimpan*
+${escapeBasicMarkdown(evidenceText)}`;
+}
+
+async function clearWelcomeSetupSession(KV, userId) {
+  await safeKVDelete(KV, getWelcomeSetupGroupKey(userId));
+  await safeKVDelete(KV, getWelcomeLinkTmpKey(userId));
+}
+
+async function listManageableGroups(API, KV, userId) {
+  const groups = await listTemanOpsGroups(KV);
+  if (!groups.length || !userId) return [];
+
+  const checks = await Promise.all(
+    groups.map(async (group) => ({
+      group,
+      allowed: await isAdmin(API, group.chat_id, userId)
+    }))
+  );
+
+  return checks.filter((x) => x.allowed).map((x) => x.group);
 }
 
 async function sendPreviewMediaOnly(API, chatId, media) {
@@ -152,6 +258,7 @@ export async function handlePrivateCommand(API, msg, KV) {
 • /setgroup [group_id]
 • /groupaktif
 • /cleargroup
+• /case [CASE_ID]
 
 • /banword add [kata]
 • /banword del [kata]
@@ -194,30 +301,59 @@ Jalankan langsung di group target:
 • reply pesan user lalu /unmute
 • /listcmdgroup
 
-ℹ️ Semua config sensitif dijalankan via private bot.
+ℹ️ Private management + /case bisa dipakai admin group target yang relevan.
 ℹ️ Sebelum manage config, pilih group dulu pakai /listgroup lalu /setgroup [group_id]
 ℹ️ Bot akan selalu tampilkan nama group + ID biar tidak ketuker.`
     );
   }
 
-  const is_user_admin = await isAdmin(API, GROUP_ID, userId);
-  if (!is_user_admin) {
-    return send(API, msg.chat.id, "❌ Bukan admin group legacy");
+  if (cmd === "/case") {
+    const rawCaseId = String(parts[1] || "").trim();
+    const caseId = normalizeCaseId(rawCaseId);
+
+    if (!caseId) {
+      return send(API, msg.chat.id, "❌ Format: /case ABCD234K");
+    }
+
+    const record = await getCaseRecord(KV, caseId);
+    if (!record) {
+      return send(API, msg.chat.id, `❌ Case tidak ditemukan: \`${escapeBasicMarkdown(caseId)}\``);
+    }
+
+    const caseChatId = Number(record.chat_id || 0);
+    if (!caseChatId) {
+      return send(API, msg.chat.id, "❌ Data case rusak: chat_id tidak valid");
+    }
+
+    const allowed = await isAdmin(API, caseChatId, userId);
+    if (!allowed) {
+      return send(
+        API,
+        msg.chat.id,
+        "❌ Kamu bukan admin group pada case ini, jadi detail bukti tidak bisa dibuka."
+      );
+    }
+
+    return send(API, msg.chat.id, renderCaseDetail(record));
+  }
+
+  const manageableGroups = await listManageableGroups(API, KV, userId);
+
+  if (!manageableGroups.length) {
+    return send(
+      API,
+      msg.chat.id,
+      "❌ Kamu bukan admin di group TeManOps yang terdaftar, atau bot belum melihat group targetmu."
+    );
   }
 
   if (cmd === "/listgroup") {
-    const groups = await listTemanOpsGroups(KV);
-
-    if (!groups.length) {
-      return send(API, msg.chat.id, "📭 Belum ada group TeManOps yang terdaftar.");
-    }
-
     const selectedId = await getSelectedGroup(KV, userId);
 
     const text =
 `📚 *Daftar Group TeManOps*
 
-${groups.map((g, i) =>
+${manageableGroups.map((g, i) =>
 `${i + 1}. ${escapeBasicMarkdown(g.title || String(g.chat_id))}
 🆔 \`${g.chat_id}\`
 📌 Status: ${g.enabled ? "AKTIF" : "NONAKTIF"}${selectedId === g.chat_id ? "\n🎯 Sedang dipilih" : ""}`
@@ -241,14 +377,13 @@ Gunakan:
     }
 
     const targetChatId = Number(rawTarget);
-    const groups = await listTemanOpsGroups(KV);
-    const target = groups.find(g => Number(g.chat_id) === targetChatId);
+    const target = manageableGroups.find((g) => Number(g.chat_id) === targetChatId);
 
     if (!target) {
       return send(
         API,
         msg.chat.id,
-        "❌ Group tidak ditemukan di registry TeManOps.\nCek lagi lewat /listgroup"
+        "❌ Group tidak ditemukan atau kamu bukan admin group tersebut.\nCek lagi lewat /listgroup"
       );
     }
 
@@ -262,32 +397,6 @@ Gunakan:
 🏠 Group: ${escapeBasicMarkdown(target.title || String(target.chat_id))}
 🆔 ID: \`${target.chat_id}\`
 📌 Status: ${target.enabled ? "AKTIF" : "NONAKTIF"}`
-    );
-  }
-
-  if (cmd === "/groupaktif") {
-    const targetChatId = await getSelectedGroup(KV, userId);
-    if (!targetChatId) {
-      return send(
-        API,
-        msg.chat.id,
-        "❌ Belum ada group yang dipilih.\nGunakan /listgroup lalu /setgroup [group_id]"
-      );
-    }
-
-    const summary = await getTemanOpsGroupSummary(KV, targetChatId);
-    const linkMode = String(await getGroupKV(KV, targetChatId, "link_mode") || "hybrid").toLowerCase();
-
-    return send(
-      API,
-      msg.chat.id,
-`${summary.enabled ? "✅" : "⛔"} *Group Aktif Saat Ini*
-
-🏠 Group: ${escapeBasicMarkdown(summary.title || String(summary.chat_id))}
-🆔 ID: \`${summary.chat_id}\`
-📌 Status: ${summary.enabled ? "AKTIF" : "NONAKTIF"}
-📝 Log target: ${escapeBasicMarkdown(summary.log_label)}
-🔗 Link mode: ${escapeBasicMarkdown(linkMode)}`
     );
   }
 
@@ -309,6 +418,18 @@ Gunakan:
       return null;
     }
 
+    const allowed = await isAdmin(API, targetChatId, userId);
+    if (!allowed) {
+      await clearSelectedGroup(KV, userId);
+      await clearWelcomeSetupSession(KV, userId);
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Kamu bukan admin group target ini. Pilihan group direset, silakan pilih lagi lewat /listgroup."
+      );
+      return null;
+    }
+
     const summary = await getTemanOpsGroupSummary(KV, targetChatId);
 
     return {
@@ -317,6 +438,26 @@ Gunakan:
       enabled: summary.enabled
     };
   };
+
+  if (cmd === "/groupaktif") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const summary = await getTemanOpsGroupSummary(KV, group.chatId);
+    const linkMode = String(await getGroupKV(KV, group.chatId, "link_mode") || "hybrid").toLowerCase();
+
+    return send(
+      API,
+      msg.chat.id,
+`${summary.enabled ? "✅" : "⛔"} *Group Aktif Saat Ini*
+
+🏠 Group: ${escapeBasicMarkdown(summary.title || String(summary.chat_id))}
+🆔 ID: \`${summary.chat_id}\`
+📌 Status: ${summary.enabled ? "AKTIF" : "NONAKTIF"}
+📝 Log target: ${escapeBasicMarkdown(summary.log_label)}
+🔗 Link mode: ${escapeBasicMarkdown(linkMode)}`
+    );
+  }
 
   if (cmd === "/updatewelcomemedia") {
     const group = await requireSelectedGroup();
@@ -397,7 +538,7 @@ Selamat datang {username} di TeMan 🤍`
     const before = links.length;
 
     links = links.filter(
-      l => String(l.text || "").trim().toLowerCase() !== title.toLowerCase()
+      (l) => String(l.text || "").trim().toLowerCase() !== title.toLowerCase()
     );
 
     if (links.length === before) {
@@ -497,7 +638,7 @@ Selamat datang {username} di TeMan 🤍`
 
     let list = String(await getGroupKV(KV, group.chatId, "banned_words"))
       .split(",")
-      .map(x => x.trim().toLowerCase())
+      .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
 
     if (!action) {
@@ -573,7 +714,7 @@ ${body}`
         );
       }
 
-      list = list.filter(w => w !== word);
+      list = list.filter((w) => w !== word);
       await safeKVPut(KV, gkey(group.chatId, "banned_words"), list.join(","));
 
       return send(
@@ -639,7 +780,7 @@ ${renderAdminList("Whitelist", list)}`
 
     if (action === "del") {
       const before = list.length;
-      list = list.filter(d => d !== domain);
+      list = list.filter((d) => d !== domain);
 
       if (list.length === before) {
         return send(
@@ -715,7 +856,7 @@ ${renderAdminList("Blacklist", list)}`
 
     if (action === "del") {
       const before = list.length;
-      list = list.filter(d => d !== domain);
+      list = list.filter((d) => d !== domain);
 
       if (list.length === before) {
         return send(
