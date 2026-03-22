@@ -184,7 +184,6 @@ export async function auditIdentityTracker(API, KV, chatId, user, source = "mess
     const changes = compareIdentitySnapshot(prevSnapshot, nextSnapshot);
 
     if (!changes.length) {
-      await writeSnapshot(KV, nextSnapshot);
       return true;
     }
 
