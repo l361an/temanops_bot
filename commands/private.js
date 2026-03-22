@@ -289,18 +289,14 @@ export async function handlePrivateCommand(API, msg, KV) {
 
 *Group Runtime Commands*
 Jalankan langsung di group target:
-• /temanops on
-• /temanops off
-• /temanops status
-• /log on
-• /log off
-• /log status
-• /watcher on
-• /watcher off
-• /watcher status
-• /tracker on
-• /tracker off
-• /tracker status
+• /aktifkantemanops
+• /nonaktifkantemanops
+• /statustemanops
+• /aktifkanlogtemanops
+• /nonaktifkanlogtemanops
+• /aktifkanpengawasan
+• /nonaktifkanpengawasan
+• /statuspengawasan
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 • /listcmdgroup
