@@ -2,8 +2,102 @@
 
 import { GROUP_ID } from "./config.js";
 import { getSafeNumber, escapeBasicMarkdown } from "./utils.js";
-import { safeKVGet, safeKVPut, send, getGroupKV } from "./kv.js";
+import {
+  safeKVGet,
+  safeKVPut,
+  send,
+  getGroupKV,
+  createCaseRecord
+} from "./kv.js";
 import { mute } from "./moderation.js";
+
+function detectContentType(msg) {
+  if (typeof msg?.text === "string" && msg.text.trim()) return "text";
+  if (typeof msg?.caption === "string" && msg.caption.trim()) {
+    if (msg.photo?.length) return "photo_caption";
+    if (msg.video?.file_id) return "video_caption";
+    if (msg.animation?.file_id) return "animation_caption";
+    if (msg.document?.file_id) return "document_caption";
+    return "caption";
+  }
+  if (msg.photo?.length) return "photo";
+  if (msg.video?.file_id) return "video";
+  if (msg.animation?.file_id) return "animation";
+  if (msg.document?.file_id) return "document";
+  if (msg.sticker?.file_id) return "sticker";
+  if (msg.voice?.file_id) return "voice";
+  if (msg.video_note?.file_id) return "video_note";
+  return "unknown";
+}
+
+function truncateCaseText(value, max = 2000) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function getEvidenceText(msg) {
+  if (typeof msg?.text === "string" && msg.text.trim()) {
+    return msg.text.trim();
+  }
+
+  if (typeof msg?.caption === "string" && msg.caption.trim()) {
+    return msg.caption.trim();
+  }
+
+  return "";
+}
+
+function collectEntityTypes(msg) {
+  const entities = [
+    ...(Array.isArray(msg?.entities) ? msg.entities : []),
+    ...(Array.isArray(msg?.caption_entities) ? msg.caption_entities : [])
+  ];
+
+  return [...new Set(entities.map((x) => String(x?.type || "").trim()).filter(Boolean))];
+}
+
+function buildCasePayload(msg, title, reason, muteMinutes, muteOk) {
+  const offenderId = Number(msg?.from?.id || 0);
+  const threadId = msg?.message_thread_id ? Number(msg.message_thread_id) : null;
+  const messageDate = Number(msg?.date || 0);
+  const evidenceText = truncateCaseText(getEvidenceText(msg), 2000);
+
+  return {
+    chat_id: Number(msg?.chat?.id || 0),
+    chat_title: String(title || msg?.chat?.title || msg?.chat?.id || "-"),
+    message_id: Number(msg?.message_id || 0),
+    message_thread_id: threadId,
+    message_date: messageDate ? new Date(messageDate * 1000).toISOString() : null,
+    reason: String(reason || "-"),
+    action: {
+      type: "mute",
+      minutes: Number(muteMinutes || 0),
+      ok: !!muteOk
+    },
+    offender: {
+      id: offenderId,
+      first_name: String(msg?.from?.first_name || ""),
+      username: String(msg?.from?.username || ""),
+      language_code: String(msg?.from?.language_code || "")
+    },
+    evidence: {
+      content_type: detectContentType(msg),
+      text: evidenceText,
+      entity_types: collectEntityTypes(msg),
+      has_media: !!(
+        msg?.photo?.length ||
+        msg?.video?.file_id ||
+        msg?.animation?.file_id ||
+        msg?.document?.file_id ||
+        msg?.sticker?.file_id ||
+        msg?.voice?.file_id ||
+        msg?.video_note?.file_id
+      )
+    }
+  };
+}
 
 export async function shouldRunModeration(KV, chatId) {
   const n = Number(chatId);
@@ -119,31 +213,58 @@ export async function getTemanOpsGroupSummary(KV, chatId) {
 }
 
 export async function punish(API, msg, KV, reason) {
-  const chatId = Number(msg.chat.id);
-  const min = getSafeNumber(await getGroupKV(KV, chatId, "mute_minutes"), 60);
+  const chatId = Number(msg?.chat?.id || 0);
+  const offenderId = Number(msg?.from?.id || 0);
+  if (!chatId || !offenderId) {
+    console.log("PUNISH FAILED: missing chatId or offenderId");
+    return { case_id: null, mute_ok: false };
+  }
 
-  await mute(API, chatId, msg.from.id, min);
+  const min = getSafeNumber(await getGroupKV(KV, chatId, "mute_minutes"), 60);
+  const muteOk = await mute(API, chatId, offenderId, min);
 
   const title = await getTemanOpsTitle(KV, chatId);
   const logTarget = await getGroupLogTarget(KV, chatId);
-  const offenderUsername = msg.from.username ? `@${msg.from.username}` : "-";
+  const offenderUsername = msg?.from?.username ? `@${msg.from.username}` : "-";
+
+  const caseRecord = await createCaseRecord(
+    KV,
+    buildCasePayload(msg, title, reason, min, muteOk)
+  );
+
+  if (!caseRecord) {
+    console.log(
+      "CASE SAVE FAILED:",
+      JSON.stringify({
+        chat_id: chatId,
+        message_id: Number(msg?.message_id || 0),
+        offender_id: offenderId,
+        reason: String(reason || "")
+      })
+    );
+  }
+
+  const punishmentText = muteOk ? `Mute ${min} menit` : "Mute gagal - cek izin bot";
+  const caseSection = caseRecord?.case_id
+    ? `\n\n🗂️ *Case ID*\n\`${caseRecord.case_id}\``
+    : "\n\n⚠️ *Case detail gagal disimpan*";
 
   const logText =
 `📋 *LOG PELANGGARAN*
 
 🏠 ${escapeBasicMarkdown(title || String(chatId))}
-👤 ${escapeBasicMarkdown(msg.from.first_name || "-")}
+👤 ${escapeBasicMarkdown(msg?.from?.first_name || "-")}
 🔗 ${escapeBasicMarkdown(offenderUsername)}
-🆔 ${msg.from.id}
+🆔 ${offenderId}
 
 🚫 *Alasan*
 ${escapeBasicMarkdown(reason)}
 
 ⏱️ *Hukuman*
-Mute ${min} menit
+${escapeBasicMarkdown(punishmentText)}
 
 🕊️ *Remisi*
-Hubungi admin group`;
+Hubungi admin group${caseSection}`;
 
   await send(
     API,
@@ -151,4 +272,9 @@ Hubungi admin group`;
     logText,
     logTarget.thread_id
   );
+
+  return {
+    case_id: caseRecord?.case_id || null,
+    mute_ok: muteOk
+  };
 }
