@@ -20,6 +20,47 @@ import {
 } from "../surveillance.js";
 import { escapeBasicMarkdown } from "../utils.js";
 
+function normalizeTelegramUsername(value) {
+  return String(value || "").trim().replace(/^@+/, "").toLowerCase();
+}
+
+function isReservedAnonymousUsername(rawTarget) {
+  return normalizeTelegramUsername(rawTarget) === "groupanonymousbot";
+}
+
+function classifyReplyTarget(replyMsg, chatId) {
+  if (!replyMsg) return { kind: "none" };
+
+  if (replyMsg.sender_chat?.id) {
+    if (String(replyMsg.sender_chat.id) === String(chatId)) {
+      return { kind: "anonymous_admin" };
+    }
+    return { kind: "sender_chat" };
+  }
+
+  const repliedUser = replyMsg.from;
+  if (!repliedUser?.id) {
+    return { kind: "unknown" };
+  }
+
+  const uname = normalizeTelegramUsername(repliedUser.username);
+  if (uname === "groupanonymousbot") {
+    return { kind: "anonymous_admin" };
+  }
+
+  if (repliedUser.is_bot) {
+    return { kind: "bot", user: repliedUser };
+  }
+
+  return { kind: "user", user: repliedUser };
+}
+
+function extractTargetIdFromBotReply(replyMsg) {
+  const replyText = String(replyMsg?.text || replyMsg?.caption || "");
+  const idMatch = replyText.match(/Target ID:\s*(\d+)/i);
+  return idMatch ? Number(idMatch[1]) : null;
+}
+
 export async function handleGroupCommand(API, msg, KV) {
   const parts = String(msg.text || "").trim().split(/\s+/);
   const raw = parts[0] || "";
@@ -361,20 +402,34 @@ export async function handleGroupCommand(API, msg, KV) {
     const defaultMinutes = Number(await getGroupKV(KV, chatId, "mute_minutes")) || 60;
     let minutes = defaultMinutes;
 
-    if (msg.reply_to_message?.from?.id) {
-      targetId = Number(msg.reply_to_message.from.id);
-      targetLabel = msg.reply_to_message.from.username
-        ? `@${msg.reply_to_message.from.username}`
-        : String(targetId);
+    if (msg.reply_to_message) {
+      const replyTarget = classifyReplyTarget(msg.reply_to_message, chatId);
 
-      if (a) {
-        if (!/^\d+$/.test(String(a).trim())) {
-          await reply(
-            "❌ Format salah.\nGunakan reply pesan user lalu /mute atau /mute <menit>"
-          );
-          return true;
+      if (replyTarget.kind === "user") {
+        targetId = Number(replyTarget.user.id);
+        targetLabel = replyTarget.user.username
+          ? `@${replyTarget.user.username}`
+          : String(targetId);
+
+        if (a) {
+          if (!/^\d+$/.test(String(a).trim())) {
+            await reply(
+              "❌ Format salah.\nGunakan reply pesan user lalu /mute atau /mute <menit>"
+            );
+            return true;
+          }
+          minutes = Number(a);
         }
-        minutes = Number(a);
+      } else if (replyTarget.kind === "anonymous_admin" || replyTarget.kind === "sender_chat") {
+        await reply(
+          "❌ Reply target ini bukan member asli. Jangan reply pesan anonymous admin / sender chat. Reply pesan user asli lalu kirim /mute."
+        );
+        return true;
+      } else {
+        await reply(
+          "❌ Gunakan reply pesan user lalu /mute atau /mute <menit>\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30"
+        );
+        return true;
       }
     } else {
       await reply(
@@ -418,6 +473,13 @@ export async function handleGroupCommand(API, msg, KV) {
         targetId = Number(rawTarget);
         targetLabel = rawTarget;
       } else if (/^@[\w\d_]{5,}$/.test(rawTarget)) {
+        if (isReservedAnonymousUsername(rawTarget)) {
+          await reply(
+            "❌ @GroupAnonymousBot bukan member asli. Gunakan /unmute @username member atau user_id member yang valid."
+          );
+          return true;
+        }
+
         const username = rawTarget.slice(1).toLowerCase();
         const resolvedId = await getCachedUserIdByUsername(KV, chatId, username);
 
@@ -437,30 +499,29 @@ export async function handleGroupCommand(API, msg, KV) {
         return true;
       }
     } else if (msg.reply_to_message) {
-      const repliedUser = msg.reply_to_message.from;
+      const replyTarget = classifyReplyTarget(msg.reply_to_message, chatId);
 
-      if (repliedUser?.id && !repliedUser.is_bot) {
-        targetId = Number(repliedUser.id);
-        targetLabel = repliedUser.username
-          ? `@${repliedUser.username}`
+      if (replyTarget.kind === "user") {
+        targetId = Number(replyTarget.user.id);
+        targetLabel = replyTarget.user.username
+          ? `@${replyTarget.user.username}`
           : String(targetId);
-      } else if (repliedUser?.is_bot) {
-        const replyText = String(
-          msg.reply_to_message.text ||
-          msg.reply_to_message.caption ||
-          ""
-        );
-
-        const idMatch = replyText.match(/Target ID:\s*(\d+)/i);
-        if (idMatch) {
-          targetId = Number(idMatch[1]);
-          targetLabel = String(targetId);
-        } else {
+      } else if (replyTarget.kind === "bot") {
+        const parsedTargetId = extractTargetIdFromBotReply(msg.reply_to_message);
+        if (!parsedTargetId) {
           await reply(
             "❌ Reply ke pesan user asli, atau reply ke pesan bot yang berisi *Target ID*, atau pakai /unmute @username / user_id"
           );
           return true;
         }
+
+        targetId = parsedTargetId;
+        targetLabel = String(parsedTargetId);
+      } else if (replyTarget.kind === "anonymous_admin" || replyTarget.kind === "sender_chat") {
+        await reply(
+          "❌ Reply target ini adalah anonymous admin / sender chat, bukan member asli. Reply pesan user asli, atau pakai /unmute @username / user_id."
+        );
+        return true;
       } else {
         await reply(
           "❌ Reply ke pesan user asli, atau pakai /unmute @username / user_id"
