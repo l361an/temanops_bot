@@ -18,6 +18,11 @@ import {
   getUsernameWatchTarget,
   clearUsernameWatchTarget
 } from "../surveillance.js";
+import {
+  setIdentityTrackerTarget,
+  getIdentityTrackerTarget,
+  clearIdentityTrackerTarget
+} from "../identityTracker.js";
 import { escapeBasicMarkdown } from "../utils.js";
 
 function normalizeTelegramUsername(value) {
@@ -96,6 +101,9 @@ export async function handleGroupCommand(API, msg, KV) {
     "/aktifkanpengawasan",
     "/nonaktifkanpengawasan",
     "/statuspengawasan",
+    "/aktifkantracker",
+    "/nonaktifkantracker",
+    "/statustracker",
     "/mute",
     "/unmute",
     "/listcmdgroup"
@@ -119,7 +127,9 @@ export async function handleGroupCommand(API, msg, KV) {
     "/aktifkanlogtemanops",
     "/nonaktifkanlogtemanops",
     "/aktifkanpengawasan",
-    "/nonaktifkanpengawasan"
+    "/nonaktifkanpengawasan",
+    "/aktifkantracker",
+    "/nonaktifkantracker"
   ]);
 
   if (!["group", "supergroup"].includes(msg.chat.type)) {
@@ -347,6 +357,95 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
+  if (cmd === "/aktifkantracker") {
+    if (await requireTopicOnly("tracker")) return true;
+
+    await setIdentityTrackerTarget(KV, chatId, chatId, replyThreadId);
+
+    await send(
+      API,
+      msg.chat.id,
+      "✅ Tracker identitas sekarang aktif di topic ini.\nPerubahan username / nama akan dikirim ke topic ini.",
+      replyThreadId
+    );
+    return true;
+  }
+
+  if (cmd === "/nonaktifkantracker") {
+    const target = await getIdentityTrackerTarget(KV, chatId);
+
+    if (!target?.chat_id) {
+      await reply("⚠️ Tracker identitas saat ini *NONAKTIF*.");
+      return true;
+    }
+
+    if (!target.thread_id) {
+      if (replyThreadId) {
+        await reply("⚠️ Tracker identitas aktif di *General*. Jalankan command ini di *General*.");
+        return true;
+      }
+
+      await clearIdentityTrackerTarget(KV, chatId);
+      await reply("✅ Tracker identitas dinonaktifkan untuk group ini.");
+      return true;
+    }
+
+    if (!replyThreadId) {
+      await reply(
+        "❌ Command ini wajib dijalankan di topic target tracker yang sedang aktif."
+      );
+      return true;
+    }
+
+    if (Number(target.thread_id) !== replyThreadId) {
+      await reply("⚠️ Topic ini bukan target tracker identitas yang aktif.");
+      return true;
+    }
+
+    await clearIdentityTrackerTarget(KV, chatId);
+    await reply("✅ Tracker identitas dinonaktifkan untuk group ini.");
+    return true;
+  }
+
+  if (cmd === "/statustracker") {
+    const title = await getTemanOpsTitle(KV, chatId);
+    const target = await getIdentityTrackerTarget(KV, chatId);
+
+    if (!target?.chat_id) {
+      await reply(
+        `🕵️ *Status Tracker Identitas*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Status: NONAKTIF\n📝 Target: -`
+      );
+      return true;
+    }
+
+    if (!target.thread_id) {
+      if (replyThreadId) {
+        await reply("⚠️ Tracker identitas aktif di *General*, bukan di topic ini.");
+        return true;
+      }
+
+      await reply(
+        `🕵️ *Status Tracker Identitas*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Status: AKTIF\n📝 Target: General`
+      );
+      return true;
+    }
+
+    if (!replyThreadId) {
+      await reply("⚠️ Tracker identitas aktif di topic lain, bukan di *General*.");
+      return true;
+    }
+
+    if (Number(target.thread_id) !== replyThreadId) {
+      await reply("⚠️ Topic ini bukan target tracker identitas yang aktif.");
+      return true;
+    }
+
+    await reply(
+      `🕵️ *Status Tracker Identitas*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Status: AKTIF\n📝 Target: Topic ID ${target.thread_id}`
+    );
+    return true;
+  }
+
   if (cmd === "/listcmdgroup") {
     await reply(
 `🛠️ *Group Commands*
@@ -364,6 +463,11 @@ export async function handleGroupCommand(API, msg, KV) {
 • /aktifkanpengawasan
 • /nonaktifkanpengawasan
 • /statuspengawasan
+
+*Topic Tracker Identitas*
+• /aktifkantracker
+• /nonaktifkantracker
+• /statustracker
 
 *User Control*
 • reply pesan user lalu /mute
@@ -391,6 +495,7 @@ export async function handleGroupCommand(API, msg, KV) {
 ℹ️ Command status hidup-mati TeManOps wajib dijalankan di *General*.
 ℹ️ /aktifkanlogtemanops dan /nonaktifkanlogtemanops dijalankan di topic target log.
 ℹ️ /aktifkanpengawasan, /nonaktifkanpengawasan, dan /statuspengawasan dijalankan di topic target pengawasan.
+ℹ️ /aktifkantracker, /nonaktifkantracker, dan /statustracker dijalankan di topic target tracker identitas.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
     return true;
