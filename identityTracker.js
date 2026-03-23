@@ -75,34 +75,59 @@ function formatUsernameValue(value) {
   return text ? `@${escapeBasicMarkdown(text)}` : "-";
 }
 
-function describeChange(change) {
-  if (!change) return null;
-
-  if (change.field === "username") {
-    return `• Username: ${formatUsernameValue(change.old_value)} → ${formatUsernameValue(change.new_value)}`;
-  }
-
-  if (change.field === "first_name") {
-    return `• Nama depan: ${formatPlainValue(change.old_value)} → ${formatPlainValue(change.new_value)}`;
-  }
-
-  if (change.field === "last_name") {
-    return `• Nama belakang: ${formatPlainValue(change.old_value)} → ${formatPlainValue(change.new_value)}`;
-  }
-
-  return null;
+function buildFullName(firstName, lastName) {
+  const first = String(firstName || "").trim();
+  const last = String(lastName || "").trim();
+  return [first, last].filter(Boolean).join(" ").trim();
 }
 
-function buildIdentityMessage(groupTitle, userId, changes) {
-  const lines = changes.map(describeChange).filter(Boolean).join("\n");
+function formatFullName(firstName, lastName) {
+  const fullName = buildFullName(firstName, lastName);
+  return fullName ? escapeBasicMarkdown(fullName) : "-";
+}
 
-  return `🕵️ *IDENTITY UPDATE*
+function getChangeMap(changes) {
+  const map = {};
+  for (const change of changes || []) {
+    if (change?.field) {
+      map[change.field] = change;
+    }
+  }
+  return map;
+}
 
-🏠 Group: ${escapeBasicMarkdown(groupTitle || "Unknown Group")}
-🆔 User ID: \`${userId}\`
-🙋 Profil: [klik buka profil](tg://user?id=${userId})
+function formatDateDDMMYY(dateLike) {
+  const d = new Date(dateLike || Date.now());
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${dd}/${mm}/${yy}`;
+}
 
-${lines}`;
+function buildIdentityMessage(groupTitle, userId, prevSnapshot, nextSnapshot, changes) {
+  const safeGroupTitle = escapeBasicMarkdown(groupTitle || "Unknown Group");
+  const profileLink = `[Klik Buka Profil](tg://user?id=${userId})`;
+  const footerDate = formatDateDDMMYY(nextSnapshot?.updated_at || Date.now());
+  const changeMap = getChangeMap(changes);
+
+  const namaBlock = changeMap.first_name || changeMap.last_name
+    ? `${formatFullName(prevSnapshot?.first_name, prevSnapshot?.last_name)} -> ${formatFullName(nextSnapshot?.first_name, nextSnapshot?.last_name)}`
+    : formatFullName(nextSnapshot?.first_name, nextSnapshot?.last_name);
+
+  const usernameBlock = changeMap.username
+    ? `${formatUsernameValue(changeMap.username.old_value)} -> ${formatUsernameValue(changeMap.username.new_value)}`
+    : formatUsernameValue(nextSnapshot?.username);
+
+  return `*UPDATE IDENTITAS*
+
+Nama :
+${namaBlock}
+
+Username :
+${usernameBlock}
+
+${profileLink}
+${safeGroupTitle} @${footerDate}`;
 }
 
 async function readSnapshot(KV, userId) {
@@ -188,7 +213,7 @@ export async function auditIdentityTracker(API, KV, chatId, user, source = "mess
     }
 
     const title = await getTemanOpsTitle(KV, groupId);
-    const text = buildIdentityMessage(title, userId, changes);
+    const text = buildIdentityMessage(title, userId, prevSnapshot, nextSnapshot, changes);
 
     const res = await tg(API, "sendMessage", {
       chat_id: Number(target.chat_id),
