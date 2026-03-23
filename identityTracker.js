@@ -9,12 +9,24 @@ function trackerTargetKey(chatId) {
   return `temanops_identity_target:${chatId}`;
 }
 
-function identitySnapshotKey(userId) {
+function identitySnapshotKey(chatId, userId) {
+  return `identity:snapshot:${Number(chatId)}:${Number(userId)}`;
+}
+
+function legacyIdentitySnapshotKey(userId) {
   return `identity:snapshot:${Number(userId)}`;
 }
 
-function identityHistoryKey(userId) {
+function identityHistoryKey(chatId, userId) {
+  return `identity:history:${Number(chatId)}:${Number(userId)}`;
+}
+
+function legacyIdentityHistoryKey(userId) {
   return `identity:history:${Number(userId)}`;
+}
+
+function identityRecentSignalKey(chatId, userId) {
+  return `identity:recent:${Number(chatId)}:${Number(userId)}`;
 }
 
 function normalizeUsername(value) {
@@ -104,9 +116,33 @@ function formatDateDDMMYY(dateLike) {
   return `${dd}/${mm}/${yy}`;
 }
 
+function buildChangeSignature(nextSnapshot, changes) {
+  const fields = (changes || [])
+    .map((item) => String(item?.field || "").trim())
+    .filter(Boolean)
+    .sort();
+
+  return JSON.stringify({
+    fields,
+    username: String(nextSnapshot?.username || ""),
+    first_name: String(nextSnapshot?.first_name || ""),
+    last_name: String(nextSnapshot?.last_name || "")
+  });
+}
+
+function isRecentDuplicateSignal(recent, signature, windowMs = 90 * 1000) {
+  if (!recent?.signature || recent.signature !== signature) return false;
+
+  const lastMs = new Date(recent.detected_at || 0).getTime();
+  if (!Number.isFinite(lastMs) || lastMs <= 0) return false;
+
+  const diff = Date.now() - lastMs;
+  return diff >= 0 && diff <= windowMs;
+}
+
 function buildIdentityMessage(groupTitle, userId, prevSnapshot, nextSnapshot, changes) {
   const safeGroupTitle = escapeBasicMarkdown(groupTitle || "Unknown Group");
-  const profileLink = `[Klik Buka Profil](tg://user?id=${userId})`;
+  const profileLink = `[🔗 Klik Buka Profil](tg://user?id=${userId})`;
   const footerDate = formatDateDDMMYY(nextSnapshot?.updated_at || Date.now());
   const changeMap = getChangeMap(changes);
 
@@ -118,42 +154,71 @@ function buildIdentityMessage(groupTitle, userId, prevSnapshot, nextSnapshot, ch
     ? `${formatUsernameValue(changeMap.username.old_value)} -> ${formatUsernameValue(changeMap.username.new_value)}`
     : formatUsernameValue(nextSnapshot?.username);
 
-  return `*UPDATE IDENTITAS*
+  return `*🔔 UPDATE IDENTITAS*
 
-Nama :
+👤 Nama :
 ${namaBlock}
 
-Username :
+🏷️ Username :
 ${usernameBlock}
 
 ${profileLink}
-${safeGroupTitle} @${footerDate}`;
+📍 ${safeGroupTitle} @${footerDate}`;
 }
 
-async function readSnapshot(KV, userId) {
-  return safeJSON(await safeKVGet(KV, identitySnapshotKey(userId)), null);
+async function readSnapshot(KV, chatId, userId) {
+  const scoped = safeJSON(
+    await safeKVGet(KV, identitySnapshotKey(chatId, userId)),
+    null
+  );
+
+  if (scoped?.id) return scoped;
+
+  return safeJSON(await safeKVGet(KV, legacyIdentitySnapshotKey(userId)), null);
 }
 
-async function writeSnapshot(KV, snapshot) {
+async function writeSnapshot(KV, chatId, snapshot) {
   return safeKVPut(
     KV,
-    identitySnapshotKey(snapshot.id),
+    identitySnapshotKey(chatId, snapshot.id),
     JSON.stringify(snapshot)
   );
 }
 
-async function appendHistory(KV, userId, entry, maxItems = 30) {
-  const key = identityHistoryKey(userId);
-  const current = safeJSON(await safeKVGet(KV, key), []);
-  const list = Array.isArray(current) ? current : [];
+async function readRecentSignal(KV, chatId, userId) {
+  return safeJSON(
+    await safeKVGet(KV, identityRecentSignalKey(chatId, userId)),
+    null
+  );
+}
 
-  list.unshift(entry);
-
+async function writeRecentSignal(KV, chatId, userId, signature) {
   return safeKVPut(
     KV,
-    key,
-    JSON.stringify(list.slice(0, maxItems))
+    identityRecentSignalKey(chatId, userId),
+    JSON.stringify({
+      signature,
+      detected_at: new Date().toISOString()
+    })
   );
+}
+
+async function appendHistory(KV, chatId, userId, entry, maxItems = 30) {
+  const scopedKey = identityHistoryKey(chatId, userId);
+  const legacyKey = legacyIdentityHistoryKey(userId);
+
+  const scopedCurrent = safeJSON(await safeKVGet(KV, scopedKey), []);
+  const scopedList = Array.isArray(scopedCurrent) ? scopedCurrent : [];
+  scopedList.unshift(entry);
+
+  const legacyCurrent = safeJSON(await safeKVGet(KV, legacyKey), []);
+  const legacyList = Array.isArray(legacyCurrent) ? legacyCurrent : [];
+  legacyList.unshift(entry);
+
+  await Promise.all([
+    safeKVPut(KV, scopedKey, JSON.stringify(scopedList.slice(0, maxItems))),
+    safeKVPut(KV, legacyKey, JSON.stringify(legacyList.slice(0, maxItems)))
+  ]);
 }
 
 export async function setIdentityTrackerTarget(KV, sourceChatId, targetChatId, threadId) {
@@ -183,8 +248,12 @@ export async function clearIdentityTrackerTarget(KV, sourceChatId) {
   return safeKVDelete(KV, trackerTargetKey(sourceChatId));
 }
 
-export async function getIdentityHistory(KV, userId) {
-  const data = safeJSON(await safeKVGet(KV, identityHistoryKey(userId)), []);
+export async function getIdentityHistory(KV, userId, chatId = null) {
+  const key = chatId
+    ? identityHistoryKey(chatId, userId)
+    : legacyIdentityHistoryKey(userId);
+
+  const data = safeJSON(await safeKVGet(KV, key), []);
   return Array.isArray(data) ? data : [];
 }
 
@@ -199,16 +268,24 @@ export async function auditIdentityTracker(API, KV, chatId, user, source = "mess
     if (!target?.chat_id) return false;
 
     const nextSnapshot = buildSnapshot(user);
-    const prevSnapshot = await readSnapshot(KV, userId);
+    const prevSnapshot = await readSnapshot(KV, groupId, userId);
 
     if (!prevSnapshot?.id) {
-      await writeSnapshot(KV, nextSnapshot);
+      await writeSnapshot(KV, groupId, nextSnapshot);
       return true;
     }
 
     const changes = compareIdentitySnapshot(prevSnapshot, nextSnapshot);
 
     if (!changes.length) {
+      return true;
+    }
+
+    const signature = buildChangeSignature(nextSnapshot, changes);
+    const recent = await readRecentSignal(KV, groupId, userId);
+
+    if (isRecentDuplicateSignal(recent, signature)) {
+      await writeSnapshot(KV, groupId, nextSnapshot);
       return true;
     }
 
@@ -235,8 +312,11 @@ export async function auditIdentityTracker(API, KV, chatId, user, source = "mess
       target_message_id: res?.result?.message_id ? Number(res.result.message_id) : null
     };
 
-    await appendHistory(KV, userId, entry);
-    await writeSnapshot(KV, nextSnapshot);
+    await Promise.all([
+      appendHistory(KV, groupId, userId, entry),
+      writeSnapshot(KV, groupId, nextSnapshot),
+      writeRecentSignal(KV, groupId, userId, signature)
+    ]);
 
     return true;
   } catch (err) {
