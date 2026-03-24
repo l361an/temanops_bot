@@ -1,9 +1,12 @@
 // identityTracker.js
-
 import { safeJSON, safeKVGet, safeKVPut, safeKVDelete } from "./kv.js";
 import { tg } from "./telegram.js";
 import { getTemanOpsTitle } from "./status.js";
 import { escapeBasicMarkdown } from "./utils.js";
+
+function hasD1(DB) {
+  return !!DB && typeof DB.prepare === "function";
+}
 
 function trackerTargetKey(chatId) {
   return `temanops_identity_target:${chatId}`;
@@ -75,11 +78,6 @@ function compareIdentitySnapshot(prev, next) {
   if (lastNameChange) out.push(lastNameChange);
 
   return out;
-}
-
-function formatPlainValue(value) {
-  const text = String(value || "").trim();
-  return text ? escapeBasicMarkdown(text) : "-";
 }
 
 function formatUsernameValue(value) {
@@ -166,7 +164,22 @@ ${profileLink}
 📍 ${safeGroupTitle} @${footerDate}`;
 }
 
-async function readSnapshot(KV, chatId, userId) {
+function mapHistoryRow(row) {
+  return {
+    detected_at: String(row?.detected_at || ""),
+    detected_in_chat_id: Number(row?.chat_id || 0),
+    source: String(row?.source || ""),
+    changes: Array.isArray(safeJSON(row?.changes_json, []))
+      ? safeJSON(row?.changes_json, [])
+      : [],
+    notified: !!Number(row?.notified || 0),
+    target_chat_id: row?.target_chat_id != null ? Number(row.target_chat_id) : null,
+    target_thread_id: row?.target_thread_id != null ? Number(row.target_thread_id) : null,
+    target_message_id: row?.target_message_id != null ? Number(row.target_message_id) : null
+  };
+}
+
+async function readSnapshotKV(KV, chatId, userId) {
   const scoped = safeJSON(
     await safeKVGet(KV, identitySnapshotKey(chatId, userId)),
     null
@@ -177,7 +190,7 @@ async function readSnapshot(KV, chatId, userId) {
   return safeJSON(await safeKVGet(KV, legacyIdentitySnapshotKey(userId)), null);
 }
 
-async function writeSnapshot(KV, chatId, snapshot) {
+async function writeSnapshotKV(KV, chatId, snapshot) {
   return safeKVPut(
     KV,
     identitySnapshotKey(chatId, snapshot.id),
@@ -185,14 +198,14 @@ async function writeSnapshot(KV, chatId, snapshot) {
   );
 }
 
-async function readRecentSignal(KV, chatId, userId) {
+async function readRecentSignalKV(KV, chatId, userId) {
   return safeJSON(
     await safeKVGet(KV, identityRecentSignalKey(chatId, userId)),
     null
   );
 }
 
-async function writeRecentSignal(KV, chatId, userId, signature) {
+async function writeRecentSignalKV(KV, chatId, userId, signature) {
   return safeKVPut(
     KV,
     identityRecentSignalKey(chatId, userId),
@@ -203,7 +216,7 @@ async function writeRecentSignal(KV, chatId, userId, signature) {
   );
 }
 
-async function appendHistory(KV, chatId, userId, entry, maxItems = 30) {
+async function appendHistoryKV(KV, chatId, userId, entry, maxItems = 30) {
   const scopedKey = identityHistoryKey(chatId, userId);
   const legacyKey = legacyIdentityHistoryKey(userId);
 
@@ -219,6 +232,275 @@ async function appendHistory(KV, chatId, userId, entry, maxItems = 30) {
     safeKVPut(KV, scopedKey, JSON.stringify(scopedList.slice(0, maxItems))),
     safeKVPut(KV, legacyKey, JSON.stringify(legacyList.slice(0, maxItems)))
   ]);
+}
+
+async function readSnapshotD1(DB, chatId, userId) {
+  const row = await DB
+    .prepare(`
+      SELECT chat_id, user_id, username, first_name, last_name, updated_at
+      FROM identity_tracker_snapshots
+      WHERE chat_id = ? AND user_id = ?
+      LIMIT 1
+    `)
+    .bind(Number(chatId), Number(userId))
+    .first();
+
+  if (!row?.user_id) return null;
+
+  return {
+    id: Number(row.user_id),
+    username: normalizeUsername(row.username),
+    first_name: normalizeName(row.first_name),
+    last_name: normalizeName(row.last_name),
+    updated_at: String(row.updated_at || "")
+  };
+}
+
+async function writeSnapshotD1(DB, chatId, snapshot) {
+  await DB
+    .prepare(`
+      INSERT INTO identity_tracker_snapshots (
+        chat_id, user_id, username, first_name, last_name, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(chat_id, user_id) DO UPDATE SET
+        username = excluded.username,
+        first_name = excluded.first_name,
+        last_name = excluded.last_name,
+        updated_at = excluded.updated_at
+    `)
+    .bind(
+      Number(chatId),
+      Number(snapshot.id),
+      normalizeUsername(snapshot.username),
+      normalizeName(snapshot.first_name),
+      normalizeName(snapshot.last_name),
+      String(snapshot.updated_at || new Date().toISOString())
+    )
+    .run();
+
+  return true;
+}
+
+async function readRecentSignalD1(DB, chatId, userId) {
+  const row = await DB
+    .prepare(`
+      SELECT signature, detected_at
+      FROM identity_tracker_recent_signals
+      WHERE chat_id = ? AND user_id = ?
+      LIMIT 1
+    `)
+    .bind(Number(chatId), Number(userId))
+    .first();
+
+  if (!row?.signature) return null;
+
+  return {
+    signature: String(row.signature || ""),
+    detected_at: String(row.detected_at || "")
+  };
+}
+
+async function writeRecentSignalD1(DB, chatId, userId, signature) {
+  await DB
+    .prepare(`
+      INSERT INTO identity_tracker_recent_signals (
+        chat_id, user_id, signature, detected_at
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(chat_id, user_id) DO UPDATE SET
+        signature = excluded.signature,
+        detected_at = excluded.detected_at
+    `)
+    .bind(
+      Number(chatId),
+      Number(userId),
+      String(signature || ""),
+      new Date().toISOString()
+    )
+    .run();
+
+  return true;
+}
+
+async function appendHistoryD1(DB, chatId, userId, entry, maxItems = 30) {
+  await DB
+    .prepare(`
+      INSERT INTO identity_tracker_history (
+        chat_id,
+        user_id,
+        detected_at,
+        source,
+        changes_json,
+        notified,
+        target_chat_id,
+        target_thread_id,
+        target_message_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .bind(
+      Number(chatId),
+      Number(userId),
+      String(entry?.detected_at || new Date().toISOString()),
+      String(entry?.source || ""),
+      JSON.stringify(Array.isArray(entry?.changes) ? entry.changes : []),
+      entry?.notified ? 1 : 0,
+      entry?.target_chat_id != null ? Number(entry.target_chat_id) : null,
+      entry?.target_thread_id != null ? Number(entry.target_thread_id) : null,
+      entry?.target_message_id != null ? Number(entry.target_message_id) : null
+    )
+    .run();
+
+  await DB
+    .prepare(`
+      DELETE FROM identity_tracker_history
+      WHERE chat_id = ? AND user_id = ?
+        AND id NOT IN (
+          SELECT id
+          FROM identity_tracker_history
+          WHERE chat_id = ? AND user_id = ?
+          ORDER BY detected_at DESC, id DESC
+          LIMIT ?
+        )
+    `)
+    .bind(
+      Number(chatId),
+      Number(userId),
+      Number(chatId),
+      Number(userId),
+      Number(maxItems)
+    )
+    .run();
+
+  return true;
+}
+
+async function getHistoryD1(DB, userId, chatId = null, limit = 30) {
+  if (chatId != null) {
+    const rows = await DB
+      .prepare(`
+        SELECT
+          id,
+          chat_id,
+          user_id,
+          detected_at,
+          source,
+          changes_json,
+          notified,
+          target_chat_id,
+          target_thread_id,
+          target_message_id
+        FROM identity_tracker_history
+        WHERE chat_id = ? AND user_id = ?
+        ORDER BY detected_at DESC, id DESC
+        LIMIT ?
+      `)
+      .bind(Number(chatId), Number(userId), Number(limit))
+      .all();
+
+    return Array.isArray(rows?.results)
+      ? rows.results.map(mapHistoryRow)
+      : [];
+  }
+
+  const rows = await DB
+    .prepare(`
+      SELECT
+        id,
+        chat_id,
+        user_id,
+        detected_at,
+        source,
+        changes_json,
+        notified,
+        target_chat_id,
+        target_thread_id,
+        target_message_id
+      FROM identity_tracker_history
+      WHERE user_id = ?
+      ORDER BY detected_at DESC, id DESC
+      LIMIT ?
+    `)
+    .bind(Number(userId), Number(limit))
+    .all();
+
+  return Array.isArray(rows?.results)
+    ? rows.results.map(mapHistoryRow)
+    : [];
+}
+
+async function readSnapshot(DB, KV, chatId, userId) {
+  if (hasD1(DB)) {
+    const d1 = await readSnapshotD1(DB, chatId, userId);
+    if (d1?.id) return d1;
+  }
+
+  return readSnapshotKV(KV, chatId, userId);
+}
+
+async function writeSnapshot(DB, KV, chatId, snapshot) {
+  if (hasD1(DB)) {
+    return writeSnapshotD1(DB, chatId, snapshot);
+  }
+
+  return writeSnapshotKV(KV, chatId, snapshot);
+}
+
+async function readRecentSignal(DB, KV, chatId, userId) {
+  if (hasD1(DB)) {
+    const d1 = await readRecentSignalD1(DB, chatId, userId);
+    if (d1?.signature) return d1;
+  }
+
+  return readRecentSignalKV(KV, chatId, userId);
+}
+
+async function writeRecentSignal(DB, KV, chatId, userId, signature) {
+  if (hasD1(DB)) {
+    return writeRecentSignalD1(DB, chatId, userId, signature);
+  }
+
+  return writeRecentSignalKV(KV, chatId, userId, signature);
+}
+
+async function appendHistory(DB, KV, chatId, userId, entry, maxItems = 30) {
+  if (hasD1(DB)) {
+    return appendHistoryD1(DB, chatId, userId, entry, maxItems);
+  }
+
+  return appendHistoryKV(KV, chatId, userId, entry, maxItems);
+}
+
+function resolveAuditArgs(a, b, c, d) {
+  if (hasD1(a)) {
+    return {
+      DB: a,
+      chatId: Number(b),
+      user: c,
+      source: d || "message"
+    };
+  }
+
+  return {
+    DB: null,
+    chatId: Number(a),
+    user: b,
+    source: c || "message"
+  };
+}
+
+function resolveHistoryArgs(a, b, c) {
+  if (hasD1(a)) {
+    return {
+      DB: a,
+      userId: Number(b),
+      chatId: c != null ? Number(c) : null
+    };
+  }
+
+  return {
+    DB: null,
+    userId: Number(a),
+    chatId: b != null ? Number(b) : null
+  };
 }
 
 export async function setIdentityTrackerTarget(KV, sourceChatId, targetChatId, threadId) {
@@ -248,8 +530,15 @@ export async function clearIdentityTrackerTarget(KV, sourceChatId) {
   return safeKVDelete(KV, trackerTargetKey(sourceChatId));
 }
 
-export async function getIdentityHistory(KV, userId, chatId = null) {
-  const key = chatId
+export async function getIdentityHistory(KV, a, b = null, c = null) {
+  const { DB, userId, chatId } = resolveHistoryArgs(a, b, c);
+
+  if (hasD1(DB)) {
+    const list = await getHistoryD1(DB, userId, chatId, 30);
+    if (list.length) return list;
+  }
+
+  const key = chatId != null
     ? identityHistoryKey(chatId, userId)
     : legacyIdentityHistoryKey(userId);
 
@@ -257,8 +546,10 @@ export async function getIdentityHistory(KV, userId, chatId = null) {
   return Array.isArray(data) ? data : [];
 }
 
-export async function auditIdentityTracker(API, KV, chatId, user, source = "message") {
+export async function auditIdentityTracker(API, KV, a, b, c, d) {
   try {
+    const { DB, chatId, user, source } = resolveAuditArgs(a, b, c, d);
+
     const groupId = Number(chatId);
     const userId = Number(user?.id);
 
@@ -268,11 +559,18 @@ export async function auditIdentityTracker(API, KV, chatId, user, source = "mess
     if (!target?.chat_id) return false;
 
     const nextSnapshot = buildSnapshot(user);
-    const prevSnapshot = await readSnapshot(KV, groupId, userId);
+    const prevSnapshot = await readSnapshot(DB, KV, groupId, userId);
+    const currentD1Snapshot = hasD1(DB)
+      ? await readSnapshotD1(DB, groupId, userId)
+      : null;
 
     if (!prevSnapshot?.id) {
-      await writeSnapshot(KV, groupId, nextSnapshot);
+      await writeSnapshot(DB, KV, groupId, nextSnapshot);
       return true;
+    }
+
+    if (hasD1(DB) && !currentD1Snapshot?.id) {
+      await writeSnapshotD1(DB, groupId, prevSnapshot);
     }
 
     const changes = compareIdentitySnapshot(prevSnapshot, nextSnapshot);
@@ -282,10 +580,10 @@ export async function auditIdentityTracker(API, KV, chatId, user, source = "mess
     }
 
     const signature = buildChangeSignature(nextSnapshot, changes);
-    const recent = await readRecentSignal(KV, groupId, userId);
+    const recent = await readRecentSignal(DB, KV, groupId, userId);
 
     if (isRecentDuplicateSignal(recent, signature)) {
-      await writeSnapshot(KV, groupId, nextSnapshot);
+      await writeSnapshot(DB, KV, groupId, nextSnapshot);
       return true;
     }
 
@@ -313,9 +611,9 @@ export async function auditIdentityTracker(API, KV, chatId, user, source = "mess
     };
 
     await Promise.all([
-      appendHistory(KV, groupId, userId, entry),
-      writeSnapshot(KV, groupId, nextSnapshot),
-      writeRecentSignal(KV, groupId, userId, signature)
+      appendHistory(DB, KV, groupId, userId, entry),
+      writeSnapshot(DB, KV, groupId, nextSnapshot),
+      writeRecentSignal(DB, KV, groupId, userId, signature)
     ]);
 
     return true;
