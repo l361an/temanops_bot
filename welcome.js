@@ -1,14 +1,44 @@
 // welcome.js
 
 import { DEFAULTS } from "./config.js";
-import { getGroupKV, safeJSON } from "./kv.js";
+import {
+  getGroupKV,
+  safeJSON,
+  safeKVGet,
+  safeKVPut,
+  safeKVDelete
+} from "./kv.js";
 import { escapeBasicMarkdown } from "./utils.js";
 import { tg } from "./telegram.js";
+
+function welcomeRecentKey(chatId, userId) {
+  return `welcome:recent:${Number(chatId)}:${Number(userId)}`;
+}
+
+function isRecentWelcome(raw, windowMs = 90 * 1000) {
+  const recent = safeJSON(raw, null);
+  if (!recent?.sent_at) return false;
+
+  const lastMs = new Date(recent.sent_at).getTime();
+  if (!Number.isFinite(lastMs) || lastMs <= 0) return false;
+
+  const diff = Date.now() - lastMs;
+  return diff >= 0 && diff <= windowMs;
+}
 
 export async function welcome(API, KV, chatId, user) {
   try {
     const targetChatId = Number(chatId);
-    if (!targetChatId) return;
+    const targetUserId = Number(user?.id || 0);
+
+    if (!targetChatId || !targetUserId || user?.is_bot) return;
+
+    const recentKey = welcomeRecentKey(targetChatId, targetUserId);
+    const recentRaw = await safeKVGet(KV, recentKey);
+
+    if (isRecentWelcome(recentRaw)) {
+      return;
+    }
 
     const username = user.username
       ? `@${user.username}`
@@ -39,15 +69,28 @@ export async function welcome(API, KV, chatId, user) {
 
     const buttons = buildWelcomeButtons(links);
 
-    await tg(API, method, {
-      chat_id: targetChatId,
-      [key]: media.file_id,
-      caption: text,
-      parse_mode: "Markdown",
-      reply_markup: buttons.length
-        ? { inline_keyboard: buttons }
-        : undefined
-    });
+    await safeKVPut(
+      KV,
+      recentKey,
+      JSON.stringify({
+        sent_at: new Date().toISOString()
+      })
+    );
+
+    try {
+      await tg(API, method, {
+        chat_id: targetChatId,
+        [key]: media.file_id,
+        caption: text,
+        parse_mode: "Markdown",
+        reply_markup: buttons.length
+          ? { inline_keyboard: buttons }
+          : undefined
+      });
+    } catch (err) {
+      await safeKVDelete(KV, recentKey);
+      throw err;
+    }
   } catch (err) {
     console.log("WELCOME FAILED:", err?.message || err);
   }
