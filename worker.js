@@ -59,13 +59,35 @@ export default {
     try {
       if (update.chat_member?.chat?.id) {
         const memberChatId = Number(update.chat_member.chat.id);
-        const { new_chat_member } = update.chat_member;
+        const { old_chat_member, new_chat_member } = update.chat_member;
+
+        const oldStatus = old_chat_member?.status;
+        const newStatus = new_chat_member?.status;
+
+        const oldIsMember =
+          old_chat_member?.is_member === true ||
+          ["member", "administrator", "creator"].includes(oldStatus);
+
+        const newIsMember =
+          new_chat_member?.is_member === true ||
+          ["member", "administrator", "creator"].includes(newStatus) ||
+          (newStatus === "restricted" && new_chat_member?.is_member === true);
+
         const newUser = new_chat_member?.user;
+        const justJoined = !oldIsMember && newIsMember;
 
         if (newUser?.id) {
           await cacheUserIdentity(KV, memberChatId, newUser);
           await auditUsernameSurveillance(API, KV, memberChatId, newUser);
           await auditIdentityTracker(API, KV, memberChatId, newUser, "chat_member");
+        }
+
+        if (
+          justJoined &&
+          !newUser?.is_bot &&
+          await shouldRunModeration(KV, memberChatId)
+        ) {
+          await welcome(API, KV, memberChatId, newUser);
         }
 
         return new Response("OK");
