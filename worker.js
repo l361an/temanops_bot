@@ -1,5 +1,4 @@
 // worker.js
-
 import { handleGroupCommand } from "./commands/group.js";
 import { handlePrivateCommand } from "./commands/private.js";
 import { welcome } from "./welcome.js";
@@ -23,6 +22,7 @@ import { shouldRunModeration, getTemanOpsTitle } from "./status.js";
 import { escapeBasicMarkdown } from "./utils.js";
 import { auditUsernameSurveillance } from "./surveillance.js";
 import { auditIdentityTracker } from "./identityTracker.js";
+import { ensureTemanOpsDb } from "./db.js";
 
 function getWelcomeSetupGroupKey(userId) {
   return `welcome_setup_group:${userId}`;
@@ -50,7 +50,21 @@ export default {
 
     const BOT_TOKEN = env.BOT_TOKEN;
     const KV = env.TEMANOPS_KV;
+    const DB = env.TEMANOPS_DB;
+
     if (!BOT_TOKEN || !KV) return new Response("ENV ERROR", { status: 500 });
+
+    let requestDB = null;
+
+    if (DB) {
+      try {
+        await ensureTemanOpsDb(DB);
+        requestDB = DB;
+      } catch (err) {
+        requestDB = null;
+        console.log("D1 INIT FAILED:", err?.stack || err?.message || String(err));
+      }
+    }
 
     const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
     const update = await req.json().catch(() => ({}));
@@ -77,9 +91,9 @@ export default {
         const justJoined = !oldIsMember && newIsMember;
 
         if (newUser?.id) {
-          await cacheUserIdentity(KV, memberChatId, newUser);
+          await cacheUserIdentity(KV, requestDB, memberChatId, newUser);
           await auditUsernameSurveillance(API, KV, memberChatId, newUser);
-          await auditIdentityTracker(API, KV, memberChatId, newUser, "chat_member");
+          await auditIdentityTracker(API, KV, requestDB, memberChatId, newUser, "chat_member");
         }
 
         if (
@@ -108,28 +122,28 @@ export default {
       const isGroupChat = ["group", "supergroup"].includes(msg.chat.type);
 
       if (msg.from?.id && !msg.from?.is_bot) {
-        await cacheUserIdentity(KV, chatId, msg.from);
+        await cacheUserIdentity(KV, requestDB, chatId, msg.from);
         if (isGroupChat) {
           await auditUsernameSurveillance(API, KV, chatId, msg.from);
-          await auditIdentityTracker(API, KV, chatId, msg.from, "message");
+          await auditIdentityTracker(API, KV, requestDB, chatId, msg.from, "message");
         }
       }
 
       if (msg.reply_to_message?.from?.id && !msg.reply_to_message?.from?.is_bot) {
-        await cacheUserIdentity(KV, chatId, msg.reply_to_message.from);
+        await cacheUserIdentity(KV, requestDB, chatId, msg.reply_to_message.from);
         if (isGroupChat) {
           await auditUsernameSurveillance(API, KV, chatId, msg.reply_to_message.from);
-          await auditIdentityTracker(API, KV, chatId, msg.reply_to_message.from, "reply");
+          await auditIdentityTracker(API, KV, requestDB, chatId, msg.reply_to_message.from, "reply");
         }
       }
 
       if (Array.isArray(msg.new_chat_members)) {
         for (const member of msg.new_chat_members) {
           if (member?.id && !member?.is_bot) {
-            await cacheUserIdentity(KV, chatId, member);
+            await cacheUserIdentity(KV, requestDB, chatId, member);
             if (isGroupChat) {
               await auditUsernameSurveillance(API, KV, chatId, member);
-              await auditIdentityTracker(API, KV, chatId, member, "new_chat_member");
+              await auditIdentityTracker(API, KV, requestDB, chatId, member, "new_chat_member");
             }
           }
         }
