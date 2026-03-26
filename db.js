@@ -16,7 +16,10 @@ const SCHEMA_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_username_surveillance_cards_target ON username_surveillance_cards(target_chat_id, target_thread_id, updated_at DESC)",
   "CREATE TABLE IF NOT EXISTS username_surveillance_history (id INTEGER PRIMARY KEY AUTOINCREMENT, source_chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, event_type TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', target_chat_id INTEGER, target_thread_id INTEGER, target_message_id INTEGER, username TEXT NOT NULL DEFAULT '', first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)",
   "CREATE INDEX IF NOT EXISTS idx_username_surveillance_history_lookup ON username_surveillance_history(source_chat_id, user_id, created_at DESC, id DESC)",
-  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_history_event ON username_surveillance_history(event_type, created_at DESC, id DESC)"
+  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_history_event ON username_surveillance_history(event_type, created_at DESC, id DESC)",
+  "CREATE TABLE IF NOT EXISTS username_surveillance_case_records (id INTEGER PRIMARY KEY AUTOINCREMENT, source_chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, case_type TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', title TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', created_by_user_id INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_case_records_lookup ON username_surveillance_case_records(source_chat_id, user_id, created_at DESC, id DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_case_records_status ON username_surveillance_case_records(status, created_at DESC, id DESC)"
 ];
 
 async function verifyTable(DB, tableName) {
@@ -40,8 +43,15 @@ export async function ensureTemanOpsDb(DB) {
 
     const hasIdentitySnapshots = await verifyTable(DB, "identity_tracker_snapshots");
     const hasUsernameSurveillanceCards = await verifyTable(DB, "username_surveillance_cards");
+    const hasUsernameSurveillanceHistory = await verifyTable(DB, "username_surveillance_history");
+    const hasUsernameSurveillanceCaseRecords = await verifyTable(DB, "username_surveillance_case_records");
 
-    if (!hasIdentitySnapshots || !hasUsernameSurveillanceCards) {
+    if (
+      !hasIdentitySnapshots ||
+      !hasUsernameSurveillanceCards ||
+      !hasUsernameSurveillanceHistory ||
+      !hasUsernameSurveillanceCaseRecords
+    ) {
       throw new Error("D1 schema verification failed");
     }
 
