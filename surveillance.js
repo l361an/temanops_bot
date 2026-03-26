@@ -27,6 +27,50 @@ function normalizeWatchCard(data) {
   };
 }
 
+function normalizeUserText(value) {
+  return String(value || "").trim();
+}
+
+function normalizeHistoryUser(user) {
+  return {
+    username: normalizeUserText(user?.username),
+    first_name: normalizeUserText(user?.first_name),
+    last_name: normalizeUserText(user?.last_name)
+  };
+}
+
+async function recordWatchHistory(DB, payload) {
+  if (!canUseDb(DB)) return false;
+
+  const user = normalizeHistoryUser(payload?.user);
+
+  try {
+    await DB
+      .prepare(
+        "INSERT INTO username_surveillance_history (source_chat_id, user_id, event_type, reason, target_chat_id, target_thread_id, target_message_id, username, first_name, last_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .bind(
+        Number(payload?.source_chat_id),
+        Number(payload?.user_id),
+        String(payload?.event_type || ""),
+        String(payload?.reason || ""),
+        payload?.target_chat_id != null ? Number(payload.target_chat_id) : null,
+        payload?.target_thread_id != null ? Number(payload.target_thread_id) : null,
+        payload?.target_message_id != null ? Number(payload.target_message_id) : null,
+        user.username,
+        user.first_name,
+        user.last_name,
+        new Date().toISOString()
+      )
+      .run();
+
+    return true;
+  } catch (err) {
+    console.log("WATCH HISTORY WRITE D1 FAILED:", err?.message || err);
+    return false;
+  }
+}
+
 async function readWatchCardFromDb(DB, chatId, userId) {
   if (!canUseDb(DB)) return null;
 
@@ -171,7 +215,10 @@ export async function auditUsernameSurveillance(API, KV, DB, chatId, user) {
     const hasUsername = !!String(user?.username || "").trim();
 
     if (hasUsername) {
-      await clearUserWatchCard(API, KV, DB, groupId, userId);
+      await clearUserWatchCard(API, KV, DB, groupId, userId, {
+        reason: "username_present",
+        user
+      });
       return true;
     }
 
@@ -186,8 +233,10 @@ export async function auditUsernameSurveillance(API, KV, DB, chatId, user) {
     }
 
     if (existing?.message_id) {
-      await deleteWatchMessage(API, existing.chat_id, existing.message_id);
-      await clearStoredWatchCard(KV, DB, groupId, userId);
+      await clearUserWatchCard(API, KV, DB, groupId, userId, {
+        reason: "retarget",
+        user
+      });
     }
 
     const title = await getTemanOpsTitle(KV, groupId);
@@ -216,10 +265,23 @@ export async function auditUsernameSurveillance(API, KV, DB, chatId, user) {
     const messageId = res?.result?.message_id;
     if (!messageId) return false;
 
-    await saveStoredWatchCard(KV, DB, groupId, userId, {
+    const storedCard = {
       chat_id: Number(target.chat_id),
       thread_id: target.thread_id ? Number(target.thread_id) : null,
       message_id: Number(messageId)
+    };
+
+    await saveStoredWatchCard(KV, DB, groupId, userId, storedCard);
+
+    await recordWatchHistory(DB, {
+      source_chat_id: groupId,
+      user_id: userId,
+      event_type: "card_created",
+      reason: "missing_username",
+      target_chat_id: storedCard.chat_id,
+      target_thread_id: storedCard.thread_id,
+      target_message_id: storedCard.message_id,
+      user
     });
 
     return true;
@@ -229,7 +291,7 @@ export async function auditUsernameSurveillance(API, KV, DB, chatId, user) {
   }
 }
 
-export async function clearUserWatchCard(API, KV, DB, chatId, userId) {
+export async function clearUserWatchCard(API, KV, DB, chatId, userId, context = {}) {
   try {
     const data = await getStoredWatchCard(KV, DB, chatId, userId);
 
@@ -238,6 +300,20 @@ export async function clearUserWatchCard(API, KV, DB, chatId, userId) {
     }
 
     await clearStoredWatchCard(KV, DB, chatId, userId);
+
+    if (data?.chat_id && data?.message_id) {
+      await recordWatchHistory(DB, {
+        source_chat_id: Number(chatId),
+        user_id: Number(userId),
+        event_type: "card_deleted",
+        reason: String(context?.reason || ""),
+        target_chat_id: Number(data.chat_id),
+        target_thread_id: data.thread_id ? Number(data.thread_id) : null,
+        target_message_id: Number(data.message_id),
+        user: context?.user
+      });
+    }
+
     return true;
   } catch (err) {
     console.log("CLEAR USER WATCH CARD FAILED:", err?.message || err);
