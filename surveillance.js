@@ -13,6 +13,124 @@ function watchCardKey(chatId, userId) {
   return `temanops_watch_card:${chatId}:${userId}`;
 }
 
+function canUseDb(DB) {
+  return !!DB && typeof DB.prepare === "function";
+}
+
+function normalizeWatchCard(data) {
+  if (!data?.chat_id || !data?.message_id) return null;
+
+  return {
+    chat_id: Number(data.chat_id),
+    thread_id: data.thread_id ? Number(data.thread_id) : null,
+    message_id: Number(data.message_id)
+  };
+}
+
+async function readWatchCardFromDb(DB, chatId, userId) {
+  if (!canUseDb(DB)) return null;
+
+  const row = await DB
+    .prepare(
+      "SELECT target_chat_id, target_thread_id, target_message_id FROM username_surveillance_cards WHERE source_chat_id = ? AND user_id = ? LIMIT 1"
+    )
+    .bind(Number(chatId), Number(userId))
+    .first();
+
+  return normalizeWatchCard({
+    chat_id: row?.target_chat_id,
+    thread_id: row?.target_thread_id,
+    message_id: row?.target_message_id
+  });
+}
+
+async function writeWatchCardToDb(DB, chatId, userId, card) {
+  if (!canUseDb(DB)) return false;
+
+  await DB
+    .prepare(
+      "INSERT INTO username_surveillance_cards (source_chat_id, user_id, target_chat_id, target_thread_id, target_message_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_chat_id, user_id) DO UPDATE SET target_chat_id = excluded.target_chat_id, target_thread_id = excluded.target_thread_id, target_message_id = excluded.target_message_id, updated_at = excluded.updated_at"
+    )
+    .bind(
+      Number(chatId),
+      Number(userId),
+      Number(card.chat_id),
+      card.thread_id ? Number(card.thread_id) : null,
+      Number(card.message_id),
+      new Date().toISOString()
+    )
+    .run();
+
+  return true;
+}
+
+async function deleteWatchCardFromDb(DB, chatId, userId) {
+  if (!canUseDb(DB)) return false;
+
+  await DB
+    .prepare("DELETE FROM username_surveillance_cards WHERE source_chat_id = ? AND user_id = ?")
+    .bind(Number(chatId), Number(userId))
+    .run();
+
+  return true;
+}
+
+async function getStoredWatchCard(KV, DB, chatId, userId) {
+  if (canUseDb(DB)) {
+    try {
+      const dbCard = await readWatchCardFromDb(DB, chatId, userId);
+      if (dbCard) return dbCard;
+    } catch (err) {
+      console.log("WATCH CARD READ D1 FAILED:", err?.message || err);
+    }
+  }
+
+  const legacy = normalizeWatchCard(
+    safeJSON(await safeKVGet(KV, watchCardKey(chatId, userId)), null)
+  );
+
+  if (!legacy) return null;
+
+  if (canUseDb(DB)) {
+    try {
+      await writeWatchCardToDb(DB, chatId, userId, legacy);
+      await safeKVDelete(KV, watchCardKey(chatId, userId));
+    } catch (err) {
+      console.log("WATCH CARD BACKFILL TO D1 FAILED:", err?.message || err);
+    }
+  }
+
+  return legacy;
+}
+
+async function saveStoredWatchCard(KV, DB, chatId, userId, card) {
+  if (canUseDb(DB)) {
+    try {
+      await writeWatchCardToDb(DB, chatId, userId, card);
+      await safeKVDelete(KV, watchCardKey(chatId, userId));
+      return true;
+    } catch (err) {
+      console.log("WATCH CARD WRITE D1 FAILED:", err?.message || err);
+    }
+  }
+
+  await safeKVPut(KV, watchCardKey(chatId, userId), JSON.stringify(card));
+  return true;
+}
+
+async function clearStoredWatchCard(KV, DB, chatId, userId) {
+  if (canUseDb(DB)) {
+    try {
+      await deleteWatchCardFromDb(DB, chatId, userId);
+    } catch (err) {
+      console.log("WATCH CARD DELETE D1 FAILED:", err?.message || err);
+    }
+  }
+
+  await safeKVDelete(KV, watchCardKey(chatId, userId));
+  return true;
+}
+
 export async function setUsernameWatchTarget(KV, sourceChatId, targetChatId, threadId) {
   return safeKVPut(
     KV,
@@ -40,7 +158,7 @@ export async function clearUsernameWatchTarget(KV, sourceChatId) {
   return safeKVDelete(KV, watchTargetKey(sourceChatId));
 }
 
-export async function auditUsernameSurveillance(API, KV, chatId, user) {
+export async function auditUsernameSurveillance(API, KV, DB, chatId, user) {
   try {
     const groupId = Number(chatId);
     const userId = Number(user?.id);
@@ -53,11 +171,11 @@ export async function auditUsernameSurveillance(API, KV, chatId, user) {
     const hasUsername = !!String(user?.username || "").trim();
 
     if (hasUsername) {
-      await clearUserWatchCard(API, KV, groupId, userId);
+      await clearUserWatchCard(API, KV, DB, groupId, userId);
       return true;
     }
 
-    const existing = safeJSON(await safeKVGet(KV, watchCardKey(groupId, userId)), null);
+    const existing = await getStoredWatchCard(KV, DB, groupId, userId);
     const sameTarget =
       existing?.message_id &&
       Number(existing.chat_id) === Number(target.chat_id) &&
@@ -69,7 +187,7 @@ export async function auditUsernameSurveillance(API, KV, chatId, user) {
 
     if (existing?.message_id) {
       await deleteWatchMessage(API, existing.chat_id, existing.message_id);
-      await safeKVDelete(KV, watchCardKey(groupId, userId));
+      await clearStoredWatchCard(KV, DB, groupId, userId);
     }
 
     const title = await getTemanOpsTitle(KV, groupId);
@@ -98,15 +216,11 @@ export async function auditUsernameSurveillance(API, KV, chatId, user) {
     const messageId = res?.result?.message_id;
     if (!messageId) return false;
 
-    await safeKVPut(
-      KV,
-      watchCardKey(groupId, userId),
-      JSON.stringify({
-        chat_id: Number(target.chat_id),
-        thread_id: target.thread_id ? Number(target.thread_id) : null,
-        message_id: Number(messageId)
-      })
-    );
+    await saveStoredWatchCard(KV, DB, groupId, userId, {
+      chat_id: Number(target.chat_id),
+      thread_id: target.thread_id ? Number(target.thread_id) : null,
+      message_id: Number(messageId)
+    });
 
     return true;
   } catch (err) {
@@ -115,16 +229,15 @@ export async function auditUsernameSurveillance(API, KV, chatId, user) {
   }
 }
 
-export async function clearUserWatchCard(API, KV, chatId, userId) {
+export async function clearUserWatchCard(API, KV, DB, chatId, userId) {
   try {
-    const raw = await safeKVGet(KV, watchCardKey(chatId, userId));
-    const data = safeJSON(raw, null);
+    const data = await getStoredWatchCard(KV, DB, chatId, userId);
 
     if (data?.chat_id && data?.message_id) {
       await deleteWatchMessage(API, data.chat_id, data.message_id);
     }
 
-    await safeKVDelete(KV, watchCardKey(chatId, userId));
+    await clearStoredWatchCard(KV, DB, chatId, userId);
     return true;
   } catch (err) {
     console.log("CLEAR USER WATCH CARD FAILED:", err?.message || err);
