@@ -92,7 +92,7 @@ export default {
 
         if (newUser?.id) {
           await cacheUserIdentity(KV, requestDB, memberChatId, newUser);
-          await auditUsernameSurveillance(API, KV, memberChatId, newUser);
+          await auditUsernameSurveillance(API, KV, requestDB, memberChatId, newUser);
           await auditIdentityTracker(API, KV, requestDB, memberChatId, newUser, "chat_member");
         }
 
@@ -124,7 +124,7 @@ export default {
       if (msg.from?.id && !msg.from?.is_bot) {
         await cacheUserIdentity(KV, requestDB, chatId, msg.from);
         if (isGroupChat) {
-          await auditUsernameSurveillance(API, KV, chatId, msg.from);
+          await auditUsernameSurveillance(API, KV, requestDB, chatId, msg.from);
           await auditIdentityTracker(API, KV, requestDB, chatId, msg.from, "message");
         }
       }
@@ -132,7 +132,7 @@ export default {
       if (msg.reply_to_message?.from?.id && !msg.reply_to_message?.from?.is_bot) {
         await cacheUserIdentity(KV, requestDB, chatId, msg.reply_to_message.from);
         if (isGroupChat) {
-          await auditUsernameSurveillance(API, KV, chatId, msg.reply_to_message.from);
+          await auditUsernameSurveillance(API, KV, requestDB, chatId, msg.reply_to_message.from);
           await auditIdentityTracker(API, KV, requestDB, chatId, msg.reply_to_message.from, "reply");
         }
       }
@@ -142,7 +142,7 @@ export default {
           if (member?.id && !member?.is_bot) {
             await cacheUserIdentity(KV, requestDB, chatId, member);
             if (isGroupChat) {
-              await auditUsernameSurveillance(API, KV, chatId, member);
+              await auditUsernameSurveillance(API, KV, requestDB, chatId, member);
               await auditIdentityTracker(API, KV, requestDB, chatId, member, "new_chat_member");
             }
           }
