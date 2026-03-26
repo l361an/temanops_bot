@@ -13,7 +13,10 @@ const SCHEMA_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_identity_tracker_history_lookup ON identity_tracker_history(chat_id, user_id, detected_at DESC, id DESC)",
   "CREATE INDEX IF NOT EXISTS idx_identity_tracker_history_user ON identity_tracker_history(user_id, detected_at DESC, id DESC)",
   "CREATE TABLE IF NOT EXISTS username_surveillance_cards (source_chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, target_chat_id INTEGER NOT NULL, target_thread_id INTEGER, target_message_id INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (source_chat_id, user_id))",
-  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_cards_target ON username_surveillance_cards(target_chat_id, target_thread_id, updated_at DESC)"
+  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_cards_target ON username_surveillance_cards(target_chat_id, target_thread_id, updated_at DESC)",
+  "CREATE TABLE IF NOT EXISTS username_surveillance_history (id INTEGER PRIMARY KEY AUTOINCREMENT, source_chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, event_type TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', target_chat_id INTEGER, target_thread_id INTEGER, target_message_id INTEGER, username TEXT NOT NULL DEFAULT '', first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_history_lookup ON username_surveillance_history(source_chat_id, user_id, created_at DESC, id DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_username_surveillance_history_event ON username_surveillance_history(event_type, created_at DESC, id DESC)"
 ];
 
 async function verifyTable(DB, tableName) {
