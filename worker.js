@@ -176,7 +176,7 @@ export default {
           await clearWelcomeSession(KV, msg.from.id);
         }
 
-        await handlePrivateCommand(API, msg, KV);
+        await handlePrivateCommand(API, msg, KV, requestDB);
         return new Response("OK");
       }
 
