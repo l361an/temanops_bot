@@ -9,6 +9,7 @@ import {
   getGroupKV,
   createCaseRecord
 } from "./kv.js";
+import { createCaseRecordD1 } from "./db.js";
 import { mute } from "./moderation.js";
 
 function detectContentType(msg) {
@@ -212,7 +213,7 @@ export async function getTemanOpsGroupSummary(KV, chatId) {
   };
 }
 
-export async function punish(API, msg, KV, reason) {
+export async function punish(API, msg, KV, DB, reason) {
   const chatId = Number(msg?.chat?.id || 0);
   const offenderId = Number(msg?.from?.id || 0);
   if (!chatId || !offenderId) {
@@ -226,11 +227,17 @@ export async function punish(API, msg, KV, reason) {
   const title = await getTemanOpsTitle(KV, chatId);
   const logTarget = await getGroupLogTarget(KV, chatId);
   const offenderUsername = msg?.from?.username ? `@${msg.from.username}` : "-";
+  const casePayload = buildCasePayload(msg, title, reason, min, muteOk);
 
-  const caseRecord = await createCaseRecord(
-    KV,
-    buildCasePayload(msg, title, reason, min, muteOk)
-  );
+  let caseRecord = null;
+
+  if (DB) {
+    caseRecord = await createCaseRecordD1(DB, casePayload);
+  }
+
+  if (!caseRecord) {
+    caseRecord = await createCaseRecord(KV, casePayload);
+  }
 
   if (!caseRecord) {
     console.log(
