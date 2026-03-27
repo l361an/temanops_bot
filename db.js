@@ -142,6 +142,51 @@ function createCaseId() {
   return randomCaseToken(CASE_ID_LENGTH);
 }
 
+function normalizeCaseId(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+
+  return /^[A-Z0-9]{8}$/.test(normalized) ? normalized : null;
+}
+
+function safeJsonParse(raw, fallback) {
+  try {
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function mapCaseRecordRow(row) {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+
+  const caseId = normalizeCaseId(row.case_id);
+  if (!caseId) {
+    return null;
+  }
+
+  return {
+    schema_version: Number(row.schema_version || 1),
+    case_id: caseId,
+    chat_id: Number(row.chat_id || 0),
+    offender_user_id: Number(row.offender_user_id || 0),
+    chat_title: String(row.chat_title || ""),
+    message_id: Number(row.message_id || 0),
+    message_thread_id: row.message_thread_id == null ? null : Number(row.message_thread_id),
+    message_date: row.message_date || null,
+    reason: String(row.reason || ""),
+    action: safeJsonParse(row.action_json, {}),
+    offender: safeJsonParse(row.offender_json, {}),
+    evidence: safeJsonParse(row.evidence_json, {}),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || row.created_at || null
+  };
+}
+
 export async function createCaseRecordD1(DB, payload) {
   if (!DB || typeof DB.prepare !== "function" || !payload || typeof payload !== "object") {
     return null;
@@ -224,4 +269,46 @@ export async function createCaseRecordD1(DB, payload) {
 
   console.log("D1 CASE CREATE FAILED: unable to allocate unique case id");
   return null;
+}
+
+export async function getCaseRecordD1(DB, rawCaseId) {
+  if (!DB || typeof DB.prepare !== "function") {
+    return null;
+  }
+
+  const caseId = normalizeCaseId(rawCaseId);
+  if (!caseId) {
+    return null;
+  }
+
+  try {
+    const row = await DB
+      .prepare(`
+        SELECT
+          schema_version,
+          case_id,
+          chat_id,
+          offender_user_id,
+          chat_title,
+          message_id,
+          message_thread_id,
+          message_date,
+          reason,
+          action_json,
+          offender_json,
+          evidence_json,
+          created_at,
+          updated_at
+        FROM username_surveillance_case_records
+        WHERE case_id = ?
+        LIMIT 1
+      `)
+      .bind(caseId)
+      .first();
+
+    return mapCaseRecordRow(row);
+  } catch (err) {
+    console.log("D1 CASE READ FAILED:", err?.stack || err?.message || String(err));
+    return null;
+  }
 }
