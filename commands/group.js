@@ -76,6 +76,8 @@ export async function handleGroupCommand(API, msg, KV) {
 
   const reply = (text) => send(API, msg.chat.id, text, replyThreadId);
 
+  const temanOpsAction = String(parts[1] || "").trim().toLowerCase();
+
   const requireGeneralOnly = async () => {
     if (replyThreadId) {
       await reply("❌ Command ini wajib dijalankan di *General*.");
@@ -93,9 +95,7 @@ export async function handleGroupCommand(API, msg, KV) {
   };
 
   const groupCommands = new Set([
-    "/aktifkantemanops",
-    "/nonaktifkantemanops",
-    "/statustemanops",
+    "/temanops",
     "/aktifkanlogtemanops",
     "/nonaktifkanlogtemanops",
     "/aktifkanpengawasan",
@@ -149,7 +149,12 @@ export async function handleGroupCommand(API, msg, KV) {
 
   if (!groupCommands.has(cmd)) return false;
 
-  if (cmd === "/aktifkantemanops") {
+  if (cmd === "/temanops" && !["on", "off", "status"].includes(temanOpsAction)) {
+    await reply("❌ Gunakan: /temanops on\n/temanops off\n/temanops status");
+    return true;
+  }
+
+  if (cmd === "/temanops" && temanOpsAction === "on") {
     if (await requireGeneralOnly()) return true;
 
     const allowed = await canManageTemanOps(API, msg);
@@ -168,7 +173,7 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
-  if (cmd === "/nonaktifkantemanops") {
+  if (cmd === "/temanops" && temanOpsAction === "off") {
     if (await requireGeneralOnly()) return true;
 
     const allowed = await canManageTemanOps(API, msg);
@@ -193,7 +198,7 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
-  if (cmd === "/statustemanops") {
+  if (cmd === "/temanops" && temanOpsAction === "status") {
     if (await requireGeneralOnly()) return true;
 
     const enabled = await isTemanOpsEnabled(KV, chatId);
@@ -451,9 +456,9 @@ export async function handleGroupCommand(API, msg, KV) {
 `🛠️ *Group Commands*
 
 *General Only*
-• /aktifkantemanops
-• /nonaktifkantemanops
-• /statustemanops
+• /temanops on
+• /temanops off
+• /temanops status
 
 *Topic Log*
 • /aktifkanlogtemanops
