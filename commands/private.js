@@ -10,6 +10,7 @@ import {
   getCaseRecord,
   normalizeCaseId
 } from "../kv.js";
+import { getCaseRecordD1 } from "../db.js";
 import { isAdmin } from "../permissions.js";
 import {
   setWelcomeStep,
@@ -229,7 +230,7 @@ async function sendPreviewTextAndLinks(API, chatId, text, links) {
   return !!res?.ok;
 }
 
-export async function handlePrivateCommand(API, msg, KV) {
+export async function handlePrivateCommand(API, msg, KV, DB) {
   const parts = String(msg.text || "").trim().split(/\s+/);
   const raw = parts[0] || "";
   const cmd = raw.split("@")[0].toLowerCase();
@@ -315,7 +316,16 @@ Jalankan langsung di group target:
       return send(API, msg.chat.id, "❌ Format: /case ABCD234K");
     }
 
-    const record = await getCaseRecord(KV, caseId);
+    let record = null;
+
+    if (DB) {
+      record = await getCaseRecordD1(DB, caseId);
+    }
+
+    if (!record) {
+      record = await getCaseRecord(KV, caseId);
+    }
+
     if (!record) {
       return send(API, msg.chat.id, `❌ Case tidak ditemukan: \`${escapeBasicMarkdown(caseId)}\``);
     }
