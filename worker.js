@@ -52,20 +52,26 @@ export default {
     const KV = env.TEMANOPS_KV;
     const DB = env.TEMANOPS_DB;
 
-    if (!BOT_TOKEN || !KV) return new Response("ENV ERROR", { status: 500 });
-
-    let requestDB = null;
-
-    if (DB) {
-      try {
-        await ensureTemanOpsDb(DB);
-        requestDB = DB;
-      } catch (err) {
-        requestDB = null;
-        console.log("D1 INIT FAILED:", err?.stack || err?.message || String(err));
-      }
+    if (!BOT_TOKEN || !KV || !DB) {
+      console.log(
+        "ENV ERROR:",
+        JSON.stringify({
+          has_bot_token: !!BOT_TOKEN,
+          has_kv: !!KV,
+          has_db: !!DB
+        })
+      );
+      return new Response("ENV ERROR", { status: 500 });
     }
 
+    try {
+      await ensureTemanOpsDb(DB);
+    } catch (err) {
+      console.log("D1 INIT FAILED:", err?.stack || err?.message || String(err));
+      return new Response("D1 INIT FAILED", { status: 500 });
+    }
+
+    const requestDB = DB;
     const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
     const update = await req.json().catch(() => ({}));
     console.log("UPDATE:", JSON.stringify(update));
