@@ -337,7 +337,7 @@ export default {
         !msg.from.is_bot &&
         await shouldRunModeration(KV, chatId)
       ) {
-        await handleModeration(API, msg, KV);
+        await handleModeration(API, msg, KV, requestDB);
       }
 
       return new Response("OK");
