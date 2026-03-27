@@ -7,7 +7,6 @@ import {
   safeKVDelete,
   getGroupKV,
   gkey,
-  getCaseRecord,
   normalizeCaseId
 } from "../kv.js";
 import { getCaseRecordD1 } from "../db.js";
@@ -320,10 +319,6 @@ Jalankan langsung di group target:
 
     if (DB) {
       record = await getCaseRecordD1(DB, caseId);
-    }
-
-    if (!record) {
-      record = await getCaseRecord(KV, caseId);
     }
 
     if (!record) {
