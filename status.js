@@ -6,8 +6,7 @@ import {
   safeKVGet,
   safeKVPut,
   send,
-  getGroupKV,
-  createCaseRecord
+  getGroupKV
 } from "./kv.js";
 import { createCaseRecordD1 } from "./db.js";
 import { mute } from "./moderation.js";
@@ -233,10 +232,6 @@ export async function punish(API, msg, KV, DB, reason) {
 
   if (DB) {
     caseRecord = await createCaseRecordD1(DB, casePayload);
-  }
-
-  if (!caseRecord) {
-    caseRecord = await createCaseRecord(KV, casePayload);
   }
 
   if (!caseRecord) {
