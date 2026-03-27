@@ -5,12 +5,12 @@ import { isAdmin } from "./permissions.js";
 import { getGroupKV, del, safeJSON } from "./kv.js";
 import { punish } from "./status.js";
 
-export async function handleModeration(API, msg, KV) {
+export async function handleModeration(API, msg, KV, DB) {
   try {
     const admin = await isAdmin(API, msg.chat.id, msg.from.id);
     if (admin) return;
 
-    if (await isFlood(API, msg, KV)) return;
+    if (await isFlood(API, msg, KV, DB)) return;
 
     const content = getMessageContent(msg);
     if (!content) return;
@@ -24,7 +24,7 @@ export async function handleModeration(API, msg, KV) {
 
       if (!allowed) {
         await del(API, msg.chat.id, msg.message_id);
-        await punish(API, msg, KV, "Mengirim link terlarang");
+        await punish(API, msg, KV, DB, "Mengirim link terlarang");
         return;
       }
     }
@@ -32,7 +32,7 @@ export async function handleModeration(API, msg, KV) {
 
     const banned = String(await getGroupKV(KV, groupId, "banned_words"))
       .split(",")
-      .map(x => x.trim().toLowerCase())
+      .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
 
     for (const w of banned) {
@@ -45,7 +45,7 @@ export async function handleModeration(API, msg, KV) {
 
       if (pattern.test(text)) {
         await del(API, msg.chat.id, msg.message_id);
-        await punish(API, msg, KV, "Menggunakan kata terlarang");
+        await punish(API, msg, KV, DB, "Menggunakan kata terlarang");
         return;
       }
     }
@@ -60,7 +60,7 @@ export function getMessageContent(msg) {
   return "";
 }
 
-export async function isFlood(API, msg, KV) {
+export async function isFlood(API, msg, KV, DB) {
   const userId = msg.from?.id;
   const groupId = Number(msg.chat.id);
   if (!userId || !groupId) return false;
@@ -70,13 +70,13 @@ export async function isFlood(API, msg, KV) {
   const limit = Number(await getGroupKV(KV, groupId, "flood_limit")) || 5;
   const win = (Number(await getGroupKV(KV, groupId, "flood_window")) || 10) * 1000;
 
-  floodMap[key] = (floodMap[key] || []).filter(t => now - t < win);
+  floodMap[key] = (floodMap[key] || []).filter((t) => now - t < win);
   floodMap[key].push(now);
 
   if (floodMap[key].length >= limit) {
     floodMap[key] = [];
     await del(API, msg.chat.id, msg.message_id);
-    await punish(API, msg, KV, "Flood / Spam");
+    await punish(API, msg, KV, DB, "Flood / Spam");
     return true;
   }
 
@@ -182,7 +182,7 @@ function isWhitelistedUrl(url, whitelist) {
 
   const host = extractDomain(url);
 
-  return whitelist.some(entry => {
+  return whitelist.some((entry) => {
     const rule = String(entry || "").trim().toLowerCase();
     if (!rule) return false;
 
@@ -198,7 +198,7 @@ function isWhitelistedUrl(url, whitelist) {
 function isBlacklistedDomain(domain, blacklist) {
   if (!Array.isArray(blacklist)) return false;
 
-  return blacklist.some(entry => {
+  return blacklist.some((entry) => {
     const rule = String(entry || "").trim().toLowerCase();
     if (!rule) return false;
     return domain === rule || domain.endsWith(`.${rule}`);
