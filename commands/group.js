@@ -77,6 +77,7 @@ export async function handleGroupCommand(API, msg, KV) {
   const reply = (text) => send(API, msg.chat.id, text, replyThreadId);
 
   const temanOpsAction = String(parts[1] || "").trim().toLowerCase();
+  const logAction = String(parts[1] || "").trim().toLowerCase();
 
   const requireGeneralOnly = async () => {
     if (replyThreadId) {
@@ -96,8 +97,7 @@ export async function handleGroupCommand(API, msg, KV) {
 
   const groupCommands = new Set([
     "/temanops",
-    "/aktifkanlogtemanops",
-    "/nonaktifkanlogtemanops",
+    "/log",
     "/aktifkanpengawasan",
     "/nonaktifkanpengawasan",
     "/statuspengawasan",
@@ -124,8 +124,6 @@ export async function handleGroupCommand(API, msg, KV) {
   ]);
 
   const creatorOnlyRuntimeCommands = new Set([
-    "/aktifkanlogtemanops",
-    "/nonaktifkanlogtemanops",
     "/aktifkanpengawasan",
     "/nonaktifkanpengawasan",
     "/aktifkantracker",
@@ -218,10 +216,77 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
+  if (cmd === "/log" && !["on", "off", "status"].includes(logAction)) {
+    await reply("❌ Gunakan: /log on\n/log off\n/log status");
+    return true;
+  }
+
   const adminAllowed = await canUseGroupAdminCommands(API, msg, KV);
   if (!adminAllowed.ok) {
     await reply(adminAllowed.message);
     return true;
+  }
+
+  if (cmd === "/log") {
+    const allowed = await canManageTemanOps(API, msg);
+    if (!allowed) {
+      await reply(
+        "❌ Command ini hanya untuk *owner* atau *anonymous admin atas nama group ini*"
+      );
+      return true;
+    }
+
+    if (logAction === "on") {
+      if (await requireTopicOnly("log")) return true;
+
+      await setGroupLogTarget(KV, chatId, chatId, replyThreadId);
+
+      await send(
+        API,
+        msg.chat.id,
+        "✅ Log TeManOps untuk group ini sekarang diarahkan ke topic ini.",
+        replyThreadId
+      );
+      return true;
+    }
+
+    if (logAction === "off") {
+      const currentTarget = await getGroupLogTarget(KV, chatId);
+
+      if (!currentTarget?.thread_id) {
+        await reply("⚠️ Log TeManOps saat ini sudah diarahkan ke *General*.");
+        return true;
+      }
+
+      if (!replyThreadId) {
+        await reply(
+          "❌ Command ini wajib dijalankan di topic target log yang sedang aktif."
+        );
+        return true;
+      }
+
+      if (Number(currentTarget.thread_id) !== replyThreadId) {
+        await reply("⚠️ Topic ini bukan target log TeManOps yang aktif.");
+        return true;
+      }
+
+      await setGroupLogTarget(KV, chatId, chatId, null);
+      await reply("✅ Log TeManOps untuk group ini dikembalikan ke *General*.");
+      return true;
+    }
+
+    if (logAction === "status") {
+      const title = await getTemanOpsTitle(KV, chatId);
+      const currentTarget = await getGroupLogTarget(KV, chatId);
+      const targetLabel = currentTarget?.thread_id
+        ? `Topic ID ${currentTarget.thread_id}`
+        : "General";
+
+      await reply(
+        `📝 *Status Log TeManOps*\n\n🏠 Group: ${escapeBasicMarkdown(title)}\n🆔 ID: \`${chatId}\`\n📌 Target: ${escapeBasicMarkdown(targetLabel)}`
+      );
+      return true;
+    }
   }
 
   if (creatorOnlyRuntimeCommands.has(cmd)) {
@@ -232,45 +297,6 @@ export async function handleGroupCommand(API, msg, KV) {
       );
       return true;
     }
-  }
-
-  if (cmd === "/aktifkanlogtemanops") {
-    if (await requireTopicOnly("log")) return true;
-
-    await setGroupLogTarget(KV, chatId, chatId, replyThreadId);
-
-    await send(
-      API,
-      msg.chat.id,
-      "✅ Log TeManOps untuk group ini sekarang diarahkan ke topic ini.",
-      replyThreadId
-    );
-    return true;
-  }
-
-  if (cmd === "/nonaktifkanlogtemanops") {
-    const currentTarget = await getGroupLogTarget(KV, chatId);
-
-    if (!currentTarget?.thread_id) {
-      await reply("⚠️ Log TeManOps saat ini sudah diarahkan ke *General*.");
-      return true;
-    }
-
-    if (!replyThreadId) {
-      await reply(
-        "❌ Command ini wajib dijalankan di topic target log yang sedang aktif."
-      );
-      return true;
-    }
-
-    if (Number(currentTarget.thread_id) !== replyThreadId) {
-      await reply("⚠️ Topic ini bukan target log TeManOps yang aktif.");
-      return true;
-    }
-
-    await setGroupLogTarget(KV, chatId, chatId, null);
-    await reply("✅ Log TeManOps untuk group ini dikembalikan ke *General*.");
-    return true;
   }
 
   if (cmd === "/aktifkanpengawasan") {
@@ -461,8 +487,9 @@ export async function handleGroupCommand(API, msg, KV) {
 • /temanops status
 
 *Topic Log*
-• /aktifkanlogtemanops
-• /nonaktifkanlogtemanops
+• /log on
+• /log off
+• /log status
 
 *Topic Pengawasan Username*
 • /aktifkanpengawasan
@@ -498,7 +525,8 @@ export async function handleGroupCommand(API, msg, KV) {
 • /listwelcomelink
 
 ℹ️ Command status hidup-mati TeManOps wajib dijalankan di *General*.
-ℹ️ /aktifkanlogtemanops dan /nonaktifkanlogtemanops dijalankan di topic target log.
+ℹ️ /log on dan /log off dijalankan di topic target log.
+ℹ️ /log status menampilkan target log aktif saat ini.
 ℹ️ /aktifkanpengawasan, /nonaktifkanpengawasan, dan /statuspengawasan dijalankan di topic target pengawasan.
 ℹ️ /aktifkantracker, /nonaktifkantracker, dan /statustracker dijalankan di topic target tracker identitas.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
