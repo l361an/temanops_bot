@@ -292,8 +292,9 @@ Jalankan langsung di group target:
 • /temanops on
 • /temanops off
 • /temanops status
-• /aktifkanlogtemanops
-• /nonaktifkanlogtemanops
+• /log on
+• /log off
+• /log status
 • /aktifkanpengawasan
 • /nonaktifkanpengawasan
 • /statuspengawasan
