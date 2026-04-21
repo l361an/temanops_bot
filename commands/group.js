@@ -118,6 +118,7 @@ export async function handleGroupCommand(API, msg, KV) {
     "/setmutetime",
     "/updatewelcometext",
     "/updatewelcomemedia",
+    "/delwelcomemedia",
     "/addwelcomelink",
     "/delwelcomelink",
     "/listwelcomelink"
@@ -520,6 +521,7 @@ export async function handleGroupCommand(API, msg, KV) {
 • /setmutetime [menit]
 • /updatewelcometext
 • /updatewelcomemedia
+• /delwelcomemedia
 • /addwelcomelink
 • /delwelcomelink [judul]
 • /listwelcomelink
