@@ -44,6 +44,196 @@ async function clearWelcomeSession(KV, userId) {
   await safeKVDelete(KV, getWelcomeLinkTmpKey(userId));
 }
 
+function isCancelText(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text === "/cancel" || text === "cancel" || text === "batal";
+}
+
+async function cancelWelcomeSession(API, KV, privateChatId, userId) {
+  await clearWelcomeSession(KV, userId);
+  await send(
+    API,
+    privateChatId,
+    "🧹 Sesi setup welcome dibatalkan.\nGunakan lagi command welcome dari private bot kalau mau mulai ulang."
+  );
+}
+
+async function handleWelcomePrivateFlow(API, KV, msg) {
+  const userId = msg.from?.id;
+  if (!userId) return false;
+
+  const step = await getWelcomeStep(KV, userId);
+  if (!step) return false;
+
+  if (isCancelText(msg.text)) {
+    await cancelWelcomeSession(API, KV, msg.chat.id, userId);
+    return true;
+  }
+
+  const targetChatId = await readWelcomeTargetChatId(KV, userId);
+  if (!targetChatId) {
+    await clearWelcomeSession(KV, userId);
+    await send(
+      API,
+      msg.chat.id,
+      "❌ Sesi config welcome tidak valid.\nPilih lagi group target dengan /listgroup lalu /setgroup, lalu ulangi command welcome."
+    );
+    return true;
+  }
+
+  const targetTitle = await getTemanOpsTitle(KV, targetChatId);
+
+  if (step === "media") {
+    let fileId = null;
+    let type = null;
+
+    if (msg.photo?.length) {
+      fileId = msg.photo.at(-1).file_id;
+      type = "photo";
+    } else if (msg.video?.file_id) {
+      fileId = msg.video.file_id;
+      type = "video";
+    } else if (msg.animation?.file_id) {
+      fileId = msg.animation.file_id;
+      type = "animation";
+    }
+
+    if (!fileId) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Kirim *foto / video / gif*, bukan teks.\nKalau mau batal, kirim /cancel"
+      );
+      return true;
+    }
+
+    await safeKVPut(
+      KV,
+      gkey(targetChatId, "welcome_media"),
+      JSON.stringify({ type, file_id: fileId })
+    );
+    await clearWelcomeSession(KV, userId);
+
+    await send(
+      API,
+      msg.chat.id,
+`✅ Welcome media berhasil disimpan
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\`
+
+ℹ️ Kalau nanti ingin hapus media dan pakai text-only welcome, gunakan /delwelcomemedia`
+    );
+    return true;
+  }
+
+  if (step === "text") {
+    if (!msg.text) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Kirim *teks*, bukan media.\nKalau mau batal, kirim /cancel"
+      );
+      return true;
+    }
+
+    await safeKVPut(KV, gkey(targetChatId, "welcome_text"), msg.text);
+    await clearWelcomeSession(KV, userId);
+
+    await send(
+      API,
+      msg.chat.id,
+`✅ Welcome text berhasil disimpan
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\`
+
+ℹ️ Placeholder yang didukung:
+• {username}
+• {nama}`
+    );
+    return true;
+  }
+
+  if (step === "link_title") {
+    if (!msg.text) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ Kirim *judul button* berupa teks.\nKalau mau batal, kirim /cancel"
+      );
+      return true;
+    }
+
+    await safeKVPut(
+      KV,
+      getWelcomeLinkTmpKey(userId),
+      JSON.stringify({
+        chat_id: targetChatId,
+        text: msg.text
+      })
+    );
+
+    await setWelcomeStep(KV, userId, "link_url");
+    await send(
+      API,
+      msg.chat.id,
+`🔗 Sekarang kirim *URL link*
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\`
+
+Contoh:
+https://t.me/namagroup`
+    );
+    return true;
+  }
+
+  if (step === "link_url") {
+    if (!msg.text || !/^https?:\/\//i.test(msg.text)) {
+      await send(
+        API,
+        msg.chat.id,
+        "❌ URL tidak valid.\nHarus diawali http:// atau https://\nKalau mau batal, kirim /cancel"
+      );
+      return true;
+    }
+
+    const tmp = safeJSON(await safeKVGet(KV, getWelcomeLinkTmpKey(userId)), {});
+    let links = safeJSON(await getKV(KV, gkey(targetChatId, "welcome_links")), []);
+
+    if (!tmp?.text || Number(tmp.chat_id) !== Number(targetChatId)) {
+      await clearWelcomeSession(KV, userId);
+      await send(API, msg.chat.id, "❌ Sesi link tidak valid. Ulangi /addwelcomelink");
+      return true;
+    }
+
+    links.push({
+      text: tmp.text,
+      url: msg.text
+    });
+
+    await safeKVPut(
+      KV,
+      gkey(targetChatId, "welcome_links"),
+      JSON.stringify(links)
+    );
+    await clearWelcomeSession(KV, userId);
+
+    await send(
+      API,
+      msg.chat.id,
+`✅ Welcome button berhasil ditambahkan
+
+🏠 Group: ${escapeBasicMarkdown(targetTitle)}
+🆔 ID: \`${targetChatId}\``
+    );
+    return true;
+  }
+
+  return false;
+}
+
 export default {
   async fetch(req, env) {
     if (req.method !== "POST") return new Response("OK");
@@ -178,7 +368,8 @@ export default {
 
       if (msg.chat.type === "private" && msg.text?.startsWith("/")) {
         const step = await getWelcomeStep(KV, msg.from?.id);
-        if (step && msg.from?.id) {
+
+        if (step && msg.from?.id && !isCancelText(msg.text)) {
           await clearWelcomeSession(KV, msg.from.id);
         }
 
@@ -187,149 +378,10 @@ export default {
       }
 
       if (msg.chat.type === "private") {
-        const userId = msg.from?.id;
-        if (!userId) return new Response("OK");
-
-        const step = await getWelcomeStep(KV, userId);
-        if (!step) return new Response("OK");
-
-        const targetChatId = await readWelcomeTargetChatId(KV, userId);
-        if (!targetChatId) {
-          await clearWelcomeSession(KV, userId);
-          await send(
-            API,
-            msg.chat.id,
-            "❌ Sesi config welcome tidak valid.\nPilih lagi group target dengan /listgroup lalu /setgroup, lalu ulangi command welcome."
-          );
+        const handledWelcomeFlow = await handleWelcomePrivateFlow(API, KV, msg);
+        if (handledWelcomeFlow) {
           return new Response("OK");
         }
-
-        const targetTitle = await getTemanOpsTitle(KV, targetChatId);
-
-        if (step === "media") {
-          let fileId = null;
-          let type = null;
-
-          if (msg.photo?.length) {
-            fileId = msg.photo.at(-1).file_id;
-            type = "photo";
-          } else if (msg.video?.file_id) {
-            fileId = msg.video.file_id;
-            type = "video";
-          } else if (msg.animation?.file_id) {
-            fileId = msg.animation.file_id;
-            type = "animation";
-          }
-
-          if (!fileId) {
-            await send(API, msg.chat.id, "❌ Kirim *foto / video / gif*, bukan teks");
-            return new Response("OK");
-          }
-
-          await safeKVPut(
-            KV,
-            gkey(targetChatId, "welcome_media"),
-            JSON.stringify({ type, file_id: fileId })
-          );
-          await clearWelcomeSession(KV, userId);
-
-          await send(
-            API,
-            msg.chat.id,
-`✅ Welcome media berhasil disimpan
-
-🏠 Group: ${escapeBasicMarkdown(targetTitle)}
-🆔 ID: \`${targetChatId}\``
-          );
-          return new Response("OK");
-        }
-
-        if (step === "text") {
-          if (!msg.text) {
-            await send(API, msg.chat.id, "❌ Kirim *teks*, bukan media");
-            return new Response("OK");
-          }
-
-          await safeKVPut(KV, gkey(targetChatId, "welcome_text"), msg.text);
-          await clearWelcomeSession(KV, userId);
-
-          await send(
-            API,
-            msg.chat.id,
-`✅ Welcome text berhasil disimpan
-
-🏠 Group: ${escapeBasicMarkdown(targetTitle)}
-🆔 ID: \`${targetChatId}\``
-          );
-          return new Response("OK");
-        }
-
-        if (step === "link_title") {
-          if (!msg.text) {
-            await send(API, msg.chat.id, "❌ Kirim *judul button*");
-            return new Response("OK");
-          }
-
-          await safeKVPut(
-            KV,
-            getWelcomeLinkTmpKey(userId),
-            JSON.stringify({
-              chat_id: targetChatId,
-              text: msg.text
-            })
-          );
-
-          await setWelcomeStep(KV, userId, "link_url");
-          await send(
-            API,
-            msg.chat.id,
-`🔗 Sekarang kirim *URL link*
-
-🏠 Group: ${escapeBasicMarkdown(targetTitle)}
-🆔 ID: \`${targetChatId}\``
-          );
-          return new Response("OK");
-        }
-
-        if (step === "link_url") {
-          if (!msg.text || !/^https?:\/\//i.test(msg.text)) {
-            await send(API, msg.chat.id, "❌ URL tidak valid");
-            return new Response("OK");
-          }
-
-          const tmp = safeJSON(await safeKVGet(KV, getWelcomeLinkTmpKey(userId)), {});
-          let links = safeJSON(await getKV(KV, gkey(targetChatId, "welcome_links")), []);
-
-          if (!tmp?.text || Number(tmp.chat_id) !== Number(targetChatId)) {
-            await clearWelcomeSession(KV, userId);
-            await send(API, msg.chat.id, "❌ Sesi link tidak valid. Ulangi /addwelcomelink");
-            return new Response("OK");
-          }
-
-          links.push({
-            text: tmp.text,
-            url: msg.text
-          });
-
-          await safeKVPut(
-            KV,
-            gkey(targetChatId, "welcome_links"),
-            JSON.stringify(links)
-          );
-          await clearWelcomeSession(KV, userId);
-
-          await send(
-            API,
-            msg.chat.id,
-`✅ Welcome button berhasil ditambahkan
-
-🏠 Group: ${escapeBasicMarkdown(targetTitle)}
-🆔 ID: \`${targetChatId}\``
-          );
-          return new Response("OK");
-        }
-
-        return new Response("OK");
       }
 
       if (msg.text === "ping") {
