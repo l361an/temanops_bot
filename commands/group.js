@@ -1,3 +1,5 @@
+// commands/group.js
+
 import { GROUP_ID } from "../config.js";
 import { send, safeKVPut, getGroupKV } from "../kv.js";
 import {
