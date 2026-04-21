@@ -54,19 +54,6 @@ export async function welcome(API, KV, chatId, user) {
       .replace(/{nama}/gi, nama);
 
     const media = safeJSON(await getGroupKV(KV, targetChatId, "welcome_media"), null);
-    if (!media?.file_id || !media?.type) return;
-
-    let method = "sendPhoto";
-    let key = "photo";
-
-    if (media.type === "video") {
-      method = "sendVideo";
-      key = "video";
-    } else if (media.type === "animation") {
-      method = "sendAnimation";
-      key = "animation";
-    }
-
     const buttons = buildWelcomeButtons(links);
 
     await safeKVPut(
@@ -78,6 +65,30 @@ export async function welcome(API, KV, chatId, user) {
     );
 
     try {
+      if (!media?.file_id || !media?.type) {
+        await tg(API, "sendMessage", {
+          chat_id: targetChatId,
+          text,
+          parse_mode: "Markdown",
+          disable_web_page_preview: true,
+          reply_markup: buttons.length
+            ? { inline_keyboard: buttons }
+            : undefined
+        });
+        return;
+      }
+
+      let method = "sendPhoto";
+      let key = "photo";
+
+      if (media.type === "video") {
+        method = "sendVideo";
+        key = "video";
+      } else if (media.type === "animation") {
+        method = "sendAnimation";
+        key = "animation";
+      }
+
       await tg(API, method, {
         chat_id: targetChatId,
         [key]: media.file_id,
