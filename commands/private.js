@@ -282,6 +282,7 @@ export async function handlePrivateCommand(API, msg, KV, DB) {
 *Welcome Commands*
 • /updatewelcometext
 • /updatewelcomemedia
+• /delwelcomemedia
 • /addwelcomelink
 • /delwelcomelink [judul]
 • /listwelcomelink
@@ -480,6 +481,25 @@ Gunakan:
 
 🏠 Group: ${escapeBasicMarkdown(group.title)}
 🆔 ID: \`${group.chatId}\``
+    );
+  }
+
+  if (cmd === "/delwelcomemedia") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    await clearWelcomeSetupSession(KV, userId);
+    await safeKVDelete(KV, gkey(group.chatId, "welcome_media"));
+
+    return send(
+      API,
+      msg.chat.id,
+`🗑️ Welcome media dihapus
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+ℹ️ Welcome akan tetap tampil tanpa gambar / video / gif.`
     );
   }
 
