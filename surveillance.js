@@ -122,36 +122,21 @@ async function deleteWatchCardFromDb(DB, chatId, userId) {
 async function getStoredWatchCard(KV, DB, chatId, userId) {
   if (canUseDb(DB)) {
     try {
-      const dbCard = await readWatchCardFromDb(DB, chatId, userId);
-      if (dbCard) return dbCard;
+      return await readWatchCardFromDb(DB, chatId, userId);
     } catch (err) {
       console.log("WATCH CARD READ D1 FAILED:", err?.message || err);
     }
   }
 
-  const legacy = normalizeWatchCard(
+  return normalizeWatchCard(
     safeJSON(await safeKVGet(KV, watchCardKey(chatId, userId)), null)
   );
-
-  if (!legacy) return null;
-
-  if (canUseDb(DB)) {
-    try {
-      await writeWatchCardToDb(DB, chatId, userId, legacy);
-      await safeKVDelete(KV, watchCardKey(chatId, userId));
-    } catch (err) {
-      console.log("WATCH CARD BACKFILL TO D1 FAILED:", err?.message || err);
-    }
-  }
-
-  return legacy;
 }
 
 async function saveStoredWatchCard(KV, DB, chatId, userId, card) {
   if (canUseDb(DB)) {
     try {
       await writeWatchCardToDb(DB, chatId, userId, card);
-      await safeKVDelete(KV, watchCardKey(chatId, userId));
       return true;
     } catch (err) {
       console.log("WATCH CARD WRITE D1 FAILED:", err?.message || err);
@@ -166,6 +151,7 @@ async function clearStoredWatchCard(KV, DB, chatId, userId) {
   if (canUseDb(DB)) {
     try {
       await deleteWatchCardFromDb(DB, chatId, userId);
+      return true;
     } catch (err) {
       console.log("WATCH CARD DELETE D1 FAILED:", err?.message || err);
     }
