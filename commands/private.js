@@ -251,15 +251,18 @@ export async function handlePrivateCommand(API, msg, KV, DB) {
     return send(
       API,
       msg.chat.id,
-`🛠️ *TeManOps*
+`🛠️ *TeManOps Help*
 
-*Private Management*
+*1. Private Management*
+Command ini dijalankan di private bot.
 • /listgroup
 • /setgroup [group_id]
 • /groupaktif
 • /cleargroup
 • /case [CASE_ID]
 
+*2. Moderation Config*
+Command ini juga via private bot setelah pilih group.
 • /banword add [kata]
 • /banword del [kata]
 • /banword list
@@ -279,7 +282,8 @@ export async function handlePrivateCommand(API, msg, KV, DB) {
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
 
-*Welcome Commands*
+*3. Welcome Config*
+Command ini via private bot setelah pilih group.
 • /updatewelcometext
 • /updatewelcomemedia
 • /delwelcomemedia
@@ -288,23 +292,48 @@ export async function handlePrivateCommand(API, msg, KV, DB) {
 • /listwelcomelink
 • /previewwelcome
 
-*Group Runtime Commands*
-Jalankan langsung di group target:
+*4. Group Runtime Commands*
+Jalankan langsung di group target.
+
+*General Only*
 • /temanops on
 • /temanops off
 • /temanops status
+
+*Topic Log Pelanggaran*
+Untuk log moderasi seperti banned word, link, flood, mute case.
 • /log on
 • /log off
 • /log status
+
+*Topic Pengawasan Username Kosong*
+Untuk user yang belum punya username. Bot membuat kartu pengawasan dan menghapusnya otomatis saat user sudah pasang username.
 • /aktifkanpengawasan
 • /nonaktifkanpengawasan
 • /statuspengawasan
+
+*Topic Tracker Identitas*
+Untuk perubahan nama Telegram atau username.
+• /aktifkantracker
+• /nonaktifkantracker
+• /statustracker
+
+*User Control*
+• reply pesan user lalu /mute
+• reply pesan user lalu /mute [menit]
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
+
+*Group Help*
 • /listcmdgroup
 
+ℹ️ Ringkasnya:
+• /log on = log pelanggaran/moderasi.
+• /aktifkanpengawasan = user tanpa username.
+• /aktifkantracker = user ganti nama/username.
+
 ℹ️ Private management + /case bisa dipakai admin group target yang relevan.
-ℹ️ Sebelum manage config, pilih group dulu pakai /listgroup lalu /setgroup [group_id]
+ℹ️ Sebelum manage config, pilih group dulu pakai /listgroup lalu /setgroup [group_id].
 ℹ️ Bot akan selalu tampilkan nama group + ID biar tidak ketuker.`
     );
   }
