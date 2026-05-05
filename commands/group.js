@@ -4,7 +4,8 @@ import { GROUP_ID } from "../config.js";
 import { send, safeKVPut, getGroupKV } from "../kv.js";
 import {
   canManageTemanOps,
-  canUseGroupAdminCommands
+  canUseGroupAdminCommands,
+  isAdmin
 } from "../permissions.js";
 import {
   setTemanOpsEnabled,
@@ -108,7 +109,8 @@ export async function handleGroupCommand(API, msg, KV) {
     "/statustracker",
     "/mute",
     "/unmute",
-    "/listcmdgroup"
+    "/listcmdgroup",
+    "/help"
   ]);
 
   const movedToPrivateCommands = new Set([
@@ -480,7 +482,7 @@ export async function handleGroupCommand(API, msg, KV) {
     return true;
   }
 
-  if (cmd === "/listcmdgroup") {
+  if (cmd === "/listcmdgroup" || cmd === "/help") {
     await reply(
 `🛠️ *Group Commands*
 
@@ -633,6 +635,12 @@ export async function handleGroupCommand(API, msg, KV) {
 
     if (!minutes || minutes <= 0) {
       await reply("❌ Durasi mute harus lebih dari 0 menit.");
+      return true;
+    }
+
+    const targetIsAdmin = await isAdmin(API, chatId, targetId);
+    if (targetIsAdmin) {
+      await reply("Maaf Bos, Admin sudah di Imunisasi !!!");
       return true;
     }
 
