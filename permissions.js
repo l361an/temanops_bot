@@ -64,7 +64,7 @@ export async function canUseGroupAdminCommands(API, msg, KV) {
   if (!admin) {
     return {
       ok: false,
-      message: "❌ Command ini hanya untuk admin / creator group ini"
+      message: "❌ Sudah siap dikutuk jadi KODOK ?"
     };
   }
 
