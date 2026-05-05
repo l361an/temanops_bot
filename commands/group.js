@@ -507,6 +507,9 @@ export async function handleGroupCommand(API, msg, KV) {
 *User Control*
 • reply pesan user lalu /mute
 • reply pesan user lalu /mute [menit]
+• /mute @username
+• /mute @username [menit]
+• /mute user_id [menit]
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
 
@@ -543,8 +546,55 @@ export async function handleGroupCommand(API, msg, KV) {
     let targetLabel = "";
     const defaultMinutes = Number(await getGroupKV(KV, chatId, "mute_minutes")) || 60;
     let minutes = defaultMinutes;
+    const rawTarget = String(a || "").trim();
+    const rawDuration = String(parts[2] || "").trim();
 
-    if (msg.reply_to_message) {
+    const parseMuteDuration = async (value, usageText) => {
+      if (!value) return true;
+      if (!/^\d+$/.test(value)) {
+        await reply(usageText);
+        return false;
+      }
+      minutes = Number(value);
+      return true;
+    };
+
+    if (rawTarget && /^@[\w\d_]{5,}$/.test(rawTarget)) {
+      if (isReservedAnonymousUsername(rawTarget)) {
+        await reply(
+          "❌ @GroupAnonymousBot bukan member asli. Gunakan /mute @username member, user_id member, atau reply pesan user asli."
+        );
+        return true;
+      }
+
+      const username = rawTarget.slice(1).toLowerCase();
+      const resolvedId = await getCachedUserIdByUsername(KV, chatId, username);
+
+      if (!resolvedId) {
+        await reply(
+          "❌ Username belum ditemukan di cache bot.\nSuruh user kirim pesan dulu di group, atau reply pesan user, atau pakai user_id."
+        );
+        return true;
+      }
+
+      targetId = Number(resolvedId);
+      targetLabel = rawTarget;
+
+      const durationOk = await parseMuteDuration(
+        rawDuration,
+        "❌ Format salah.\nGunakan: /mute @username atau /mute @username <menit>"
+      );
+      if (!durationOk) return true;
+    } else if (rawTarget && /^\d+$/.test(rawTarget) && !msg.reply_to_message) {
+      targetId = Number(rawTarget);
+      targetLabel = rawTarget;
+
+      const durationOk = await parseMuteDuration(
+        rawDuration,
+        "❌ Format salah.\nGunakan: /mute user_id atau /mute user_id <menit>"
+      );
+      if (!durationOk) return true;
+    } else if (msg.reply_to_message) {
       const replyTarget = classifyReplyTarget(msg.reply_to_message, chatId);
 
       if (replyTarget.kind === "user") {
@@ -553,15 +603,11 @@ export async function handleGroupCommand(API, msg, KV) {
           ? `@${replyTarget.user.username}`
           : String(targetId);
 
-        if (a) {
-          if (!/^\d+$/.test(String(a).trim())) {
-            await reply(
-              "❌ Format salah.\nGunakan reply pesan user lalu /mute atau /mute <menit>"
-            );
-            return true;
-          }
-          minutes = Number(a);
-        }
+        const durationOk = await parseMuteDuration(
+          rawTarget,
+          "❌ Format salah.\nGunakan reply pesan user lalu /mute atau /mute <menit>"
+        );
+        if (!durationOk) return true;
       } else if (replyTarget.kind === "anonymous_admin" || replyTarget.kind === "sender_chat") {
         await reply(
           "❌ Reply target ini bukan member asli. Jangan reply pesan anonymous admin / sender chat. Reply pesan user asli lalu kirim /mute."
@@ -569,13 +615,13 @@ export async function handleGroupCommand(API, msg, KV) {
         return true;
       } else {
         await reply(
-          "❌ Gunakan reply pesan user lalu /mute atau /mute <menit>\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30"
+          "❌ Gunakan reply pesan user lalu /mute, /mute @username, atau /mute user_id\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30\n• /mute @username\n• /mute @username 30"
         );
         return true;
       }
     } else {
       await reply(
-        "❌ Gunakan reply pesan user lalu /mute atau /mute <menit>\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30"
+        "❌ Gunakan reply pesan user lalu /mute, /mute @username, atau /mute user_id\n\nContoh:\n• reply user lalu /mute\n• reply user lalu /mute 30\n• /mute @username\n• /mute @username 30"
       );
       return true;
     }
@@ -594,13 +640,17 @@ export async function handleGroupCommand(API, msg, KV) {
 
     if (!ok) {
       await reply(
-        `❌ Mute gagal untuk ${targetLabel || targetId}\nCek apakah bot masih admin dan punya izin restrict members.`
+        `❌ Mute gagal untuk ${targetLabel || targetId}
+Cek apakah bot masih admin dan punya izin restrict members.`
       );
       return true;
     }
 
     await reply(
-      `🔇 MUTE BERHASIL\nTarget: ${targetLabel || targetId}\nTarget ID: ${targetId}\nDurasi: ${minutes} menit`
+      `🔇 MUTE BERHASIL
+Target: ${targetLabel || targetId}
+Target ID: ${targetId}
+Durasi: ${minutes} menit`
     );
     return true;
   }
