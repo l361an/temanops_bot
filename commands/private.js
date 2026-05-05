@@ -321,8 +321,13 @@ Untuk perubahan nama Telegram atau username.
 *User Control*
 • reply pesan user lalu /mute
 • reply pesan user lalu /mute [menit]
+• /mute @username
+• /mute @username [menit]
+• /mute user_id
+• /mute user_id [menit]
 • /unmute [@username|user_id]
 • reply pesan user lalu /unmute
+• Admin/creator tidak bisa dimute: Maaf Bos, Admin sudah di Imunisasi !!!
 
 *Group Help*
 • /listcmdgroup
