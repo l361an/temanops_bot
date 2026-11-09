@@ -27,6 +27,13 @@ import {
   normalizeDomainInput,
   escapeBasicMarkdown
 } from "../utils.js";
+import {
+  getAutoResponses,
+  isAutoReplyEnabled,
+  buildPattern,
+  matchAutoResponse,
+  normalizeKeyword
+} from "../autoresponder.js";
 
 function getWelcomeSetupGroupKey(userId) {
   return `welcome_setup_group:${userId}`;
@@ -282,7 +289,17 @@ Command ini juga via private bot setelah pilih group.
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
 
-*3. Welcome Config*
+*3. Auto Reply Config*
+Command ini via private bot setelah pilih group.
+• /autoreply add <keyword> | <jawaban>
+• /autoreply del <keyword>
+• /autoreply list
+• /autoreply on
+• /autoreply off
+• /autoreply status
+• /autoreply test <teks>
+
+*4. Welcome Config*
 Command ini via private bot setelah pilih group.
 • /updatewelcometext
 • /updatewelcomemedia
@@ -292,7 +309,7 @@ Command ini via private bot setelah pilih group.
 • /listwelcomelink
 • /previewwelcome
 
-*4. Group Runtime Commands*
+*5. Group Runtime Commands*
 Jalankan langsung di group target.
 
 *General Only*
@@ -336,6 +353,7 @@ Untuk perubahan nama Telegram atau username.
 • /log on = log pelanggaran/moderasi.
 • /aktifkanpengawasan = user tanpa username.
 • /aktifkantracker = user ganti nama/username.
+• /autoreply = keyword trigger jawaban otomatis.
 
 ℹ️ Private management + /case bisa dipakai admin group target yang relevan.
 ℹ️ Sebelum manage config, pilih group dulu pakai /listgroup lalu /setgroup [group_id].
@@ -1039,6 +1057,192 @@ Mode tersedia:
 🏠 Group: ${escapeBasicMarkdown(group.title)}
 🆔 ID: \`${group.chatId}\`
 ⏳ Mute: ${n} menit`
+    );
+  }
+
+  if (cmd === "/autoreply") {
+    const group = await requireSelectedGroup();
+    if (!group) return true;
+
+    const rest = String(msg.text || "").replace(/^\/autoreply(@\w+)?\s*/i, "").trim();
+    const firstSpace = rest.split(/\s+/)[0] || "";
+    const action = firstSpace.toLowerCase();
+    const afterAction = rest.slice(firstSpace.length).trim();
+
+    if (!action || action === "help") {
+      return send(
+        API,
+        msg.chat.id,
+`🤖 *Auto Reply*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+Format:
+• /autoreply list
+• /autoreply add <keyword> | <jawaban>
+• /autoreply del <keyword>
+• /autoreply on
+• /autoreply off
+• /autoreply status
+• /autoreply test <teks>
+
+Contoh:
+\`/autoreply add FR | Untuk FR sekarang sudah digabung di @FRBandungRaya\`
+
+ℹ️ Keyword pakai *word-boundary* (bukan substring).
+ℹ️ "FR" tidak akan kena di "FREE" / "AFRICA".
+ℹ️ Bisa multi-kata: \`open bo\`.`
+      );
+    }
+
+    if (action === "status") {
+      const enabled = await isAutoReplyEnabled(KV, group.chatId);
+      const list = await getAutoResponses(KV, group.chatId);
+      return send(
+        API,
+        msg.chat.id,
+`🤖 *Status Auto Reply*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+📌 Status: ${enabled ? "AKTIF" : "NONAKTIF"}
+📝 Jumlah keyword: ${list.length}`
+      );
+    }
+
+    if (action === "on") {
+      await safeKVPut(KV, gkey(group.chatId, "autoreply_enabled"), "1");
+      return send(API, msg.chat.id, "✅ Auto reply *diaktifkan* untuk group ini.");
+    }
+
+    if (action === "off") {
+      await safeKVPut(KV, gkey(group.chatId, "autoreply_enabled"), "0");
+      return send(API, msg.chat.id, "⛔ Auto reply *dinonaktifkan* untuk group ini.");
+    }
+
+    if (action === "list") {
+      const list = await getAutoResponses(KV, group.chatId);
+      if (!list.length) {
+        return send(
+          API,
+          msg.chat.id,
+          "📭 Belum ada keyword auto reply.\n\nTambah dengan:\n`/autoreply add <keyword> | <jawaban>`"
+        );
+      }
+      const body = list
+        .map((x, i) => `${i + 1}. \`${escapeBasicMarkdown(x.keyword)}\`\n   → ${escapeBasicMarkdown(x.reply)}`)
+        .join("\n\n");
+      return send(
+        API,
+        msg.chat.id,
+`🤖 *Daftar Auto Reply*
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+
+${body}`
+      );
+    }
+
+    if (action === "add") {
+      const sep = afterAction.indexOf("|");
+      if (sep === -1) {
+        return send(
+          API,
+          msg.chat.id,
+`❌ Format: /autoreply add <keyword> | <jawaban>
+
+Contoh:
+\`/autoreply add FR | Untuk FR sekarang sudah digabung di @FRBandungRaya\``
+        );
+      }
+      const keyword = normalizeKeyword(afterAction.slice(0, sep));
+      const reply = afterAction.slice(sep + 1).trim();
+
+      if (!keyword || !reply) {
+        return send(API, msg.chat.id, "❌ Keyword dan jawaban tidak boleh kosong.");
+      }
+      if (!buildPattern(keyword)) {
+        return send(API, msg.chat.id, "❌ Keyword tidak valid.");
+      }
+
+      const list = await getAutoResponses(KV, group.chatId);
+      if (list.some((x) => x.keyword.toLowerCase() === keyword.toLowerCase())) {
+        return send(
+          API,
+          msg.chat.id,
+          `⚠️ Keyword \`${escapeBasicMarkdown(keyword)}\` sudah ada.\nHapus dulu: /autoreply del ${keyword}`
+        );
+      }
+      if (list.length >= 100) {
+        return send(API, msg.chat.id, "❌ Batas maksimal 100 keyword per group.");
+      }
+
+      list.push({ keyword, reply });
+      await safeKVPut(KV, gkey(group.chatId, "autoresponses"), JSON.stringify(list));
+
+      return send(
+        API,
+        msg.chat.id,
+`✅ Auto reply ditambahkan
+
+🏠 Group: ${escapeBasicMarkdown(group.title)}
+🆔 ID: \`${group.chatId}\`
+🔑 Keyword: \`${escapeBasicMarkdown(keyword)}\`
+💬 Jawaban: ${escapeBasicMarkdown(reply)}`
+      );
+    }
+
+    if (action === "del" || action === "delete") {
+      const keyword = normalizeKeyword(afterAction);
+      if (!keyword) {
+        return send(API, msg.chat.id, "❌ Format: /autoreply del <keyword>");
+      }
+      const list = await getAutoResponses(KV, group.chatId);
+      const before = list.length;
+      const filtered = list.filter(
+        (x) => x.keyword.toLowerCase() !== keyword.toLowerCase()
+      );
+      if (filtered.length === before) {
+        return send(API, msg.chat.id, `⚠️ Keyword \`${escapeBasicMarkdown(keyword)}\` tidak ditemukan.`);
+      }
+      await safeKVPut(KV, gkey(group.chatId, "autoresponses"), JSON.stringify(filtered));
+      return send(
+        API,
+        msg.chat.id,
+        `🗑️ Auto reply dihapus.\n🔑 Keyword: \`${escapeBasicMarkdown(keyword)}\``
+      );
+    }
+
+    if (action === "test") {
+      const sample = afterAction;
+      if (!sample) {
+        return send(
+          API,
+          msg.chat.id,
+          "❌ Format: /autoreply test <teks>\n\nContoh:\n`/autoreply test FR dimana ya sekarang?`"
+        );
+      }
+      const list = await getAutoResponses(KV, group.chatId);
+      const matched = matchAutoResponse(list, sample);
+      if (!matched) {
+        return send(API, msg.chat.id, `❌ Tidak ada keyword yang cocok dengan:\n"${escapeBasicMarkdown(sample)}"`);
+      }
+      return send(
+        API,
+        msg.chat.id,
+`✅ Cocok!
+
+🔑 Keyword: \`${escapeBasicMarkdown(matched.keyword)}\`
+💬 Jawaban: ${escapeBasicMarkdown(matched.reply)}`
+      );
+    }
+
+    return send(
+      API,
+      msg.chat.id,
+      "❌ Gunakan: /autoreply list | add | del | on | off | status | test"
     );
   }
 
