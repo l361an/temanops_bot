@@ -8,12 +8,12 @@ import { punish } from "./status.js";
 export async function handleModeration(API, msg, KV, DB) {
   try {
     const admin = await isAdmin(API, msg.chat.id, msg.from.id);
-    if (admin) return;
+    if (admin) return false;
 
-    if (await isFlood(API, msg, KV, DB)) return;
+    if (await isFlood(API, msg, KV, DB)) return true;
 
     const content = getMessageContent(msg);
-    if (!content) return;
+    if (!content) return false;
 
     const text = content.toLowerCase();
     const groupId = Number(msg.chat.id);
@@ -25,7 +25,7 @@ export async function handleModeration(API, msg, KV, DB) {
       if (!allowed) {
         await del(API, msg.chat.id, msg.message_id);
         await punish(API, msg, KV, DB, "Mengirim link terlarang");
-        return;
+        return true;
       }
     }
     LINK_REGEX.lastIndex = 0;
@@ -46,11 +46,14 @@ export async function handleModeration(API, msg, KV, DB) {
       if (pattern.test(text)) {
         await del(API, msg.chat.id, msg.message_id);
         await punish(API, msg, KV, DB, "Menggunakan kata terlarang");
-        return;
+        return true;
       }
     }
+
+    return false;
   } catch (err) {
     console.log("MODERATION ERROR:", err?.message || err);
+    return false;
   }
 }
 
