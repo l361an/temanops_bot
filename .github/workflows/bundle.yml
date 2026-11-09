@@ -1,0 +1,38 @@
+name: Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "text = bundle.txt, git = repo.bundle"
+        type: choice
+        default: text
+        options:
+          - text
+          - git
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Jalankan bundle.sh
+        run: |
+          chmod +x bundle.sh
+          if [ "${{ inputs.mode }}" = "git" ]; then
+            ./bundle.sh --git
+          else
+            ./bundle.sh bundle.txt
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: |
+            bundle.txt
+            repo.bundle
+          if-no-files-found: ignore
+          retention-days: 3
