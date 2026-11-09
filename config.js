@@ -16,7 +16,9 @@ export const DEFAULTS = {
   link_mode: "hybrid",
   welcome_text: "Selamat Bergabung di *TeMan* 🤍",
   welcome_media: "",
-  welcome_links: "[]"
+  welcome_links: "[]",
+  autoresponses: "[]",
+  autoreply_enabled: "1"
 };
 
 export const floodMap = {};
