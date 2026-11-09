@@ -3,7 +3,7 @@ import { handleGroupCommand } from "./commands/group.js";
 import { handlePrivateCommand } from "./commands/private.js";
 import { welcome } from "./welcome.js";
 import { handleModeration } from "./moderation.js";
-import { maybeAutoRespond } from "./autoresponder.js";
+import { maybeAutoRespond, isAnonymousAdminMessage } from "./autoresponder.js";
 import {
   cacheUserIdentity,
   getWelcomeStep,
@@ -317,6 +317,7 @@ export default {
 
       const chatId = Number(msg.chat.id);
       const isGroupChat = ["group", "supergroup"].includes(msg.chat.type);
+      const isAnon = isAnonymousAdminMessage(msg);
 
       if (msg.from?.id && !msg.from?.is_bot) {
         await cacheUserIdentity(KV, requestDB, chatId, msg.from);
@@ -359,7 +360,7 @@ export default {
       }
 
       if (
-        ["group", "supergroup"].includes(msg.chat.type) &&
+        isGroupChat &&
         typeof msg.text === "string" &&
         msg.text.startsWith("/")
       ) {
@@ -391,14 +392,19 @@ export default {
       }
 
       if (
-        ["group", "supergroup"].includes(msg.chat.type) &&
+        isGroupChat &&
         msg.from &&
-        !msg.from.is_bot &&
         await shouldRunModeration(KV, chatId)
       ) {
-        const moderated = await handleModeration(API, msg, KV, requestDB);
-        if (!moderated) {
+        if (isAnon) {
+          // Anonymous admin: skip moderasi (tidak bisa dimute by design),
+          // tapi tetap jalankan autoresponder
           await maybeAutoRespond(API, KV, msg);
+        } else if (!msg.from.is_bot) {
+          const moderated = await handleModeration(API, msg, KV, requestDB);
+          if (!moderated) {
+            await maybeAutoRespond(API, KV, msg);
+          }
         }
       }
 
