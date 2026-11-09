@@ -120,6 +120,7 @@ export async function handleGroupCommand(API, msg, KV) {
     "/linkmode",
     "/antiflood",
     "/setmutetime",
+    "/autoreply",
     "/updatewelcometext",
     "/updatewelcomemedia",
     "/delwelcomemedia",
@@ -526,6 +527,7 @@ export async function handleGroupCommand(API, msg, KV) {
 • /linkmode hybrid|whitelistonly|status
 • /antiflood [limit] [detik]
 • /setmutetime [menit]
+• /autoreply add|del|list|on|off|status|test
 • /updatewelcometext
 • /updatewelcomemedia
 • /delwelcomemedia
@@ -538,6 +540,7 @@ export async function handleGroupCommand(API, msg, KV) {
 ℹ️ /log status menampilkan target log aktif saat ini.
 ℹ️ /aktifkanpengawasan, /nonaktifkanpengawasan, dan /statuspengawasan dijalankan di topic target pengawasan.
 ℹ️ /aktifkantracker, /nonaktifkantracker, dan /statustracker dijalankan di topic target tracker identitas.
+ℹ️ /autoreply dijalankan via private bot setelah pilih group.
 ℹ️ Untuk @username, user harus sudah pernah terlihat oleh bot di group ini.`
     );
     return true;
