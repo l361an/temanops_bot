@@ -3,6 +3,7 @@ import { handleGroupCommand } from "./commands/group.js";
 import { handlePrivateCommand } from "./commands/private.js";
 import { welcome } from "./welcome.js";
 import { handleModeration } from "./moderation.js";
+import { maybeAutoRespond } from "./autoresponder.js";
 import {
   cacheUserIdentity,
   getWelcomeStep,
@@ -395,7 +396,10 @@ export default {
         !msg.from.is_bot &&
         await shouldRunModeration(KV, chatId)
       ) {
-        await handleModeration(API, msg, KV, requestDB);
+        const moderated = await handleModeration(API, msg, KV, requestDB);
+        if (!moderated) {
+          await maybeAutoRespond(API, KV, msg);
+        }
       }
 
       return new Response("OK");
